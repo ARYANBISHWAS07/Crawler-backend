@@ -1,0 +1,26 @@
+fastapi
+uvicorn[standard]
+crawl4ai
+chromadb
+python-dotenv
+pydantic[email]
+email-validator
+
+# MongoDB
+motor
+pymongo
+
+# Authentication
+python-jose[cryptography]
+bcrypt
+
+# LangChain for LLM and text processing
+langchain
+langchain-groq
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+sentence-transformers
+
+# Socket.IO for real-time updates
+python-socketio[asgi]

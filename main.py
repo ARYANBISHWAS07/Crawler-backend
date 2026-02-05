@@ -1,0 +1,54 @@
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, List
+from contextlib import asynccontextmanager
+import asyncio
+
+from app.crawler import crawl_sync
+from app import vector_store
+from app.database import connect_to_mongodb, close_mongodb_connection
+from app.routes import users_router, chat_router, collections_router
+from app.socketio_manager import socket_app, sio, set_main_loop
+
+import uuid
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Connect to MongoDB
+    await connect_to_mongodb()
+    
+    # Capture the main event loop for background tasks
+    loop = asyncio.get_event_loop()
+    set_main_loop(loop)
+    print(f"✅ Main event loop captured for Socket.IO emissions")
+    
+    yield
+    
+    # Shutdown: Close connections
+    await close_mongodb_connection()
+
+
+app = FastAPI(
+    title="Website Knowledge Base API",
+    description="Crawl websites and turn them into searchable knowledge bases",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(users_router)
+app.include_router(chat_router)
+app.include_router(collections_router)
+
+# Mount Socket.IO app at /socket.io path
+app.mount("/", socket_app)

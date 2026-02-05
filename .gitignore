@@ -1,0 +1,23 @@
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+# Environments
+.env
+venv/
+env/
+ENV/
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+# Logs and databases
+*.log
+*.sqlite3
+# Misc
+.DS_Store
+*.bak
+*.tmp
+*.swp
+
