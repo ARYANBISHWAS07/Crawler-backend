@@ -6,9 +6,15 @@ from crawl4ai import (
     BrowserConfig,
     CrawlerRunConfig,
     CacheMode,
+    DefaultMarkdownGenerator,
+    PruningContentFilter,
 )
-from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
+
+from crawl4ai.deep_crawling import DFSDeepCrawlStrategy, BFSDeepCrawlStrategy
 from crawl4ai.deep_crawling.filters import FilterChain, DomainFilter
+# from app.filters import NormalizeURLFilter
+# from crawl4ai.filters import ResolveRelativeURLFilter
+
 
 
 async def run_crawl(
@@ -87,23 +93,18 @@ async def run_crawl(
                 )
             
             if page.success:
-                # Get the full markdown content - no truncation
                 markdown_content = ""
                 if page.markdown:
-                    # markdown is now an object with raw_markdown property
                     if hasattr(page.markdown, 'raw_markdown'):
                         markdown_content = page.markdown.raw_markdown
                     elif hasattr(page.markdown, 'fit_markdown'):
-                        # fit_markdown contains cleaned/formatted content
                         markdown_content = page.markdown.fit_markdown
                     else:
                         markdown_content = str(page.markdown)
                 
-                # Also try to get HTML content if markdown is empty
                 if not markdown_content and page.html:
                     markdown_content = page.html
                 
-                # Get cleaned HTML content as fallback
                 if not markdown_content and hasattr(page, 'cleaned_html') and page.cleaned_html:
                     markdown_content = page.cleaned_html
                 
@@ -130,3 +131,108 @@ def crawl_sync(
 ) -> List[Dict[str, Any]]:
     """Synchronous wrapper for run_crawl with optional progress callback."""
     return asyncio.run(run_crawl(url, max_pages, max_depth, progress_callback))
+
+async def crawl_manual(
+    start_url: str,
+    max_depth: int = 2,
+    max_pages: int = 10,
+):
+    md_generator = DefaultMarkdownGenerator(
+        content_filter=PruningContentFilter(
+            threshold=0.5,
+            threshold_type="fixed",
+        )
+    )
+    run_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        markdown_generator=md_generator,
+        verbose=False,
+    )
+
+    browser_config = BrowserConfig(
+        headless=True,
+        verbose=False,
+    )
+
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        results = await crawler.arun(
+            url=start_url,
+            config=run_config
+        )
+        print(f"Crawled URL: {results.url}")
+        print(f"Content length: {len(results.markdown)}")
+        print(f"Content preview: {results.markdown[:200]}...")
+        # print(f"Length: {len(results.markdown)}")
+        print(results.markdown)
+        return {
+            "length": len(results.markdown),
+            "url": results.url,
+            "content": results.markdown,  
+        }
+    
+
+
+
+async def crawl_site(
+    start_url: str,
+    domain: str,
+    max_depth: int = 8,
+    max_pages: int = 1000,
+):
+    md_generator = DefaultMarkdownGenerator(
+        content_filter=PruningContentFilter(
+            threshold=0.5,
+            threshold_type="fixed",
+        )
+    )
+
+    filter_chain = FilterChain([
+        # ResolveRelativeURLFilter(start_url),
+        # NormalizeURLFilter(start_url),
+        DomainFilter(allowed_domains=[domain]),
+        # URLPatternFilter(deny_patterns=[r"\?.*", r"#.*"]),
+    ])
+
+    run_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        markdown_generator=md_generator,
+        auto_url_join=True,
+        deep_crawl_strategy=DFSDeepCrawlStrategy(
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external=False,
+            filter_chain=filter_chain,
+        ),
+        verbose=False,
+    )
+
+    browser_config = BrowserConfig(
+        headless=True,
+    )
+
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        crawl_results = await crawler.arun(
+            url=start_url,
+            config=run_config
+        )
+
+    pages = []
+    for page in crawl_results if isinstance(crawl_results, list) else [crawl_results]:
+        if page.success and page.markdown:
+            content = (
+                page.markdown.raw_markdown
+                if hasattr(page.markdown, "raw_markdown")
+                else page.markdown.fit_markdown
+            )
+            pages.append({
+                "url": page.url,
+                "title": page.metadata.get("title", ""),
+                "content": content,
+                "length": len(content),
+            })
+
+    return {
+        "pages_crawled": len(pages),
+        "pages": pages,
+    }
+

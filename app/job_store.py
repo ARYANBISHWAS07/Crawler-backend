@@ -34,7 +34,6 @@ async def get_job(job_id: str) -> Optional[dict]:
     job = await jobs_collection.find_one({"id": job_id})
     
     if job:
-        # Remove MongoDB's _id field for JSON serialization
         job.pop("_id", None)
         return job
     
@@ -121,3 +120,13 @@ async def delete_job(job_id: str) -> bool:
     result = await jobs_collection.delete_one({"id": job_id})
     
     return result.deleted_count > 0
+# app/job_store.py
+from enum import Enum
+
+class JobStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+JOB_STORE = {}

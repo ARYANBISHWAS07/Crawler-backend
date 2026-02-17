@@ -92,3 +92,6 @@ class ChatHistoryResponse(BaseModel):
     session_id: str
     collection_id: str
     messages: List[ChatMessage]
+
+class CrawlRequest(BaseModel):
+    url: str

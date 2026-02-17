@@ -2,17 +2,19 @@
 Collection routes for managing scraped website collections.
 """
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from httpcore import request
+from numpy import generic
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import uuid
 
-from app.crawler import crawl_sync
+from app.crawler import crawl_manual, crawl_sync, crawl_site
 from app import vector_store
 from app import job_store
 from app import collection_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
-
+from urllib.parse import urlparse
 router = APIRouter(prefix="/collections", tags=["collections"])
 
 
@@ -278,3 +280,49 @@ async def get_collection_job(collection_id: str):
         )
     
     return job
+
+
+@router.post("/crawl/site")
+async def crawl_site_endpoint(
+    url: str,
+    background_tasks: BackgroundTasks
+):
+    background_tasks.add_task(
+        crawl_manual,
+        start_url=url,
+        max_depth=2,
+        max_pages=10
+    )
+
+    return {
+        "status": "crawl started",
+        "url": url,
+        "depth": 2,
+        "max_pages": 10,
+        "manual_crawl": "crawl_manual"
+    }
+
+@router.post("/crawl/site/BFS")
+async def crawl_site_endpoint(
+    url: str,
+    background_tasks: BackgroundTasks
+):
+    domain = urlparse(url).netloc
+    
+    background_tasks.add_task(
+        crawl_site,
+        start_url=url,
+        domain=domain,
+        max_depth=2,
+        max_pages=10
+    )
+
+    return {
+        "status": "crawl started",
+        "url": url,
+        "depth": 2,
+        "max_pages": 10,
+        "domain": domain
+    }
+
+
