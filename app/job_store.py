@@ -120,13 +120,4 @@ async def delete_job(job_id: str) -> bool:
     result = await jobs_collection.delete_one({"id": job_id})
     
     return result.deleted_count > 0
-# app/job_store.py
-from enum import Enum
 
-class JobStatus(str, Enum):
-    pending = "pending"
-    running = "running"
-    completed = "completed"
-    failed = "failed"
-
-JOB_STORE = {}

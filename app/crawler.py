@@ -12,8 +12,7 @@ from crawl4ai import (
 
 from crawl4ai.deep_crawling import DFSDeepCrawlStrategy, BFSDeepCrawlStrategy
 from crawl4ai.deep_crawling.filters import FilterChain, DomainFilter
-# from app.filters import NormalizeURLFilter
-# from crawl4ai.filters import ResolveRelativeURLFilter
+
 
 
 

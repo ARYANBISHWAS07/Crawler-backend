@@ -22,7 +22,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 client = QdrantClient(url="http://localhost:6333")
 
 COLLECTION_NAME = "scraped_data"
-VECTOR_SIZE = 384  # all-MiniLM-L6-v2
+VECTOR_SIZE = 384 
 
 
 
@@ -70,7 +70,7 @@ def chunk_text(text: str) -> List[str]:
 
 
 
-# STORE PAGES
+
 
 def store_pages(
     pages: List[Dict[str, Any]],
