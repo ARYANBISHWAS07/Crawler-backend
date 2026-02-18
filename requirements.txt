@@ -1,11 +1,11 @@
 fastapi
 uvicorn[standard]
 crawl4ai
-chromadb
 python-dotenv
 pydantic[email]
 email-validator
-
+qdrant-client
+scrapy
 # MongoDB
 motor
 pymongo
