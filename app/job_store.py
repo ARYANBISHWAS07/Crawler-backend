@@ -34,7 +34,6 @@ async def get_job(job_id: str) -> Optional[dict]:
     job = await jobs_collection.find_one({"id": job_id})
     
     if job:
-        # Remove MongoDB's _id field for JSON serialization
         job.pop("_id", None)
         return job
     

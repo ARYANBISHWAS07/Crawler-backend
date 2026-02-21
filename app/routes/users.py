@@ -163,6 +163,9 @@ async def get_user_jobs(current_user: dict = Depends(get_current_user)):
             "url": job.get("url"),
             "status": job.get("status"),
             "pages_stored": job.get("pages_stored", 0),
+            "routes_crawled_count": job.get("routes_crawled_count", 0),
+            "routes_not_crawled_count": job.get("routes_not_crawled_count", 0),
+            "crawl_logs_count": job.get("crawl_logs_count", 0),
             "created_at": job.get("created_at"),
             "collection_name": job.get("collection_name")
         }

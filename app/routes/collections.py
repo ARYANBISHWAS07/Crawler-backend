@@ -1,7 +1,7 @@
 """
 Collection routes for managing scraped website collections.
 """
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -14,6 +14,8 @@ from app import collection_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
 
 router = APIRouter(prefix="/collections", tags=["collections"])
+
+CRAWL_LOG_STORE_LIMIT = 5000
 
 
 class CreateCollectionRequest(BaseModel):
@@ -43,19 +45,70 @@ def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollec
         def crawl_progress(current: int, total: int, message: str):
             emit_progress_sync(job_id, current, total, message, stage="crawling")
         
-        # Run the crawler with progress
-        data = crawl_sync(req.url, req.max_pages, req.max_depth, progress_callback=crawl_progress)
+        # Run crawler and capture route-level crawl report
+        crawl_report = crawl_sync(
+            req.url,
+            req.max_pages,
+            req.max_depth,
+            progress_callback=crawl_progress,
+            include_report=True,
+        )
+
+        if isinstance(crawl_report, dict):
+            data = crawl_report.get("pages", [])
+            crawled_routes = crawl_report.get("crawled_routes", [])
+            not_crawled_routes = crawl_report.get("not_crawled_routes", [])
+            crawl_logs = crawl_report.get("crawl_logs", [])
+            crawl_summary = crawl_report.get("summary", {})
+        else:
+            data = crawl_report
+            crawled_routes = [page.get("url", "") for page in data if page.get("url")]
+            not_crawled_routes = []
+            crawl_logs = []
+            crawl_summary = {}
+
+        if len(crawl_logs) > CRAWL_LOG_STORE_LIMIT:
+            crawl_logs = crawl_logs[-CRAWL_LOG_STORE_LIMIT:]
+
+        routes_crawled_count = len(crawled_routes)
+        routes_not_crawled_count = len(not_crawled_routes)
+        crawl_logs_count = len(crawl_logs)
         
         # Update status to embedding
-        job_store.update_job_sync(job_id, {"status": "embedding", "pages_crawled": len(data)})
-        collection_store.update_collection_sync(collection_id, {"status": "embedding"})
+        job_store.update_job_sync(job_id, {
+            "status": "embedding",
+            "pages_crawled": len(data),
+            "routes_crawled": crawled_routes,
+            "routes_not_crawled": not_crawled_routes,
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+            "crawl_logs": crawl_logs,
+            "crawl_logs_count": crawl_logs_count,
+            "crawl_summary": crawl_summary,
+        })
+        collection_store.update_collection_sync(collection_id, {
+            "status": "embedding",
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+        })
         
         emit_job_update_sync(job_id, {
             "status": "embedding",
             "pages_crawled": len(data),
-            "message": f"Crawled {len(data)} pages. Creating embeddings..."
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+            "crawl_logs_count": crawl_logs_count,
+            "message": (
+                f"Crawled {routes_crawled_count} route(s). "
+                f"Not crawled: {routes_not_crawled_count}. Creating embeddings..."
+            ),
         })
-        emit_collection_update_sync(collection_id, {"status": "embedding", "pages_count": len(data)})
+        emit_collection_update_sync(collection_id, {
+            "status": "embedding",
+            "pages_count": len(data),
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+        })
         
         # Progress callback for embedding
         def embed_progress(current: int, total: int, message: str):
@@ -69,24 +122,38 @@ def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollec
             "status": "completed",
             "pages_stored": pages_stored,
             "collection_name": req.name,
-            "results_count": len(data)
+            "results_count": len(data),
+            "routes_crawled": crawled_routes,
+            "routes_not_crawled": not_crawled_routes,
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+            "crawl_logs": crawl_logs,
+            "crawl_logs_count": crawl_logs_count,
+            "crawl_summary": crawl_summary,
         })
         
         # Update collection as completed
         collection_store.update_collection_sync(collection_id, {
             "status": "completed",
-            "pages_count": pages_stored
+            "pages_count": pages_stored,
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
         })
         
         emit_job_update_sync(job_id, {
             "status": "completed",
             "pages_stored": pages_stored,
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
+            "crawl_logs_count": crawl_logs_count,
             "percentage": 100,
             "message": f"Successfully stored {pages_stored} chunks. Ready to chat!"
         })
         emit_collection_update_sync(collection_id, {
             "status": "completed",
-            "pages_count": pages_stored
+            "pages_count": pages_stored,
+            "routes_crawled_count": routes_crawled_count,
+            "routes_not_crawled_count": routes_not_crawled_count,
         })
         
     except Exception as e:
@@ -131,6 +198,8 @@ async def create_collection(
         "url": req.url,
         "status": "pending",
         "pages_count": 0,
+        "routes_crawled_count": 0,
+        "routes_not_crawled_count": 0,
         "job_id": job_id,
         "user_id": req.user_id,
         "chat_sessions": [],
@@ -149,6 +218,12 @@ async def create_collection(
         "collection_id": collection_id,
         "status": "pending",
         "pages_stored": 0,
+        "routes_crawled": [],
+        "routes_not_crawled": [],
+        "routes_crawled_count": 0,
+        "routes_not_crawled_count": 0,
+        "crawl_logs": [],
+        "crawl_logs_count": 0,
         "created_at": now,
         "updated_at": now
     }
@@ -278,3 +353,82 @@ async def get_collection_job(collection_id: str):
         )
     
     return job
+
+
+@router.get("/{collection_id}/routes")
+async def get_collection_routes(collection_id: str):
+    """Get crawled and not-crawled routes for a collection."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+
+    job_id = collection.get("job_id")
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No job associated with this collection"
+        )
+
+    job = await job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+
+    routes_crawled = job.get("routes_crawled", [])
+    routes_not_crawled = job.get("routes_not_crawled", [])
+
+    return {
+        "collection_id": collection_id,
+        "job_id": job_id,
+        "routes_crawled_count": job.get("routes_crawled_count", len(routes_crawled)),
+        "routes_not_crawled_count": job.get("routes_not_crawled_count", len(routes_not_crawled)),
+        "routes_crawled": routes_crawled,
+        "routes_not_crawled": routes_not_crawled,
+        "crawl_summary": job.get("crawl_summary", {}),
+    }
+
+
+@router.get("/{collection_id}/crawl-logs")
+async def get_collection_crawl_logs(
+    collection_id: str,
+    limit: int = Query(200, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+):
+    """Get crawl logs for a collection job (including crawled and skipped endpoints)."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+
+    job_id = collection.get("job_id")
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No job associated with this collection"
+        )
+
+    job = await job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+
+    logs = job.get("crawl_logs", [])
+    sliced_logs = logs[offset:offset + limit]
+
+    return {
+        "collection_id": collection_id,
+        "job_id": job_id,
+        "crawl_logs_count": job.get("crawl_logs_count", len(logs)),
+        "offset": offset,
+        "limit": limit,
+        "logs": sliced_logs,
+    }
