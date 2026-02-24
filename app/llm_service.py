@@ -281,3 +281,41 @@ Instructions:
     chain = prompt | chat_llm | StrOutputParser()
 
     return chain.invoke({"summary": summary})
+
+
+def generate_questionnaire_from_chunk(
+    chunk: str,
+    model: str = None,
+    max_tokens: int = 600
+) -> str:
+    """
+    Generate a questionnaire for a single chunk of crawled data.
+    """
+
+    chat_llm = get_llm(model=model, temperature=0.6, max_tokens=max_tokens)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are an expert instructional designer. "
+         "Create a focused questionnaire strictly based on the provided chunk of content."
+        ),
+        ("human",
+         """Based on the following content chunk, generate 3-5 high-quality questions.
+
+Content Chunk:
+{chunk}
+
+Rules:
+- Questions must be strictly based on this chunk only
+- Do not assume missing information
+- Number the questions clearly
+- Do not provide answers
+"""
+        )
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+
+    return chain.invoke({"chunk": chunk})
+
+
