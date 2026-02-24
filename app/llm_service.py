@@ -235,3 +235,49 @@ def summarize_content(
     chain = prompt | chat_llm | StrOutputParser()
     
     return chain.invoke({"content": content})
+
+
+def generate_questionnaire_from_summary(
+    summary: str,
+    model: str = None,
+    max_tokens: int = 800
+) -> str:
+    """
+    Generate a structured questionnaire based on summarized content.
+    
+    Args:
+        summary: The summarized content
+        model: Optional model override
+        max_tokens: Maximum length of output
+        
+    Returns:
+        Questionnaire string
+    """
+
+    chat_llm = get_llm(model=model, temperature=0.6, max_tokens=max_tokens)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", 
+         "You are an expert educational content designer. "
+         "Your job is to generate a high-quality questionnaire "
+         "based strictly on the provided summary."
+        ),
+        ("human",
+         """Based on the following summarized content, create a well-structured questionnaire.
+
+Summary:
+{summary}
+
+Instructions:
+- Create 5-10 questions
+- Include a mix of conceptual and analytical questions
+- Keep questions clear and concise
+- Do not include answers
+- Number the questions clearly
+"""
+        )
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+
+    return chain.invoke({"summary": summary})
