@@ -19,7 +19,7 @@ from crawl4ai import (
 )
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 from crawl4ai.deep_crawling.filters import FilterChain, DomainFilter
-
+from app import llm_service,chunk_store
 
 DEFAULT_MAX_PAGES = 10000
 ROBOTS_TIMEOUT_SECONDS = 8
@@ -1132,4 +1132,15 @@ def crawl_sync(
         max_depth,
         progress_callback=progress_callback,
         include_report=include_report,
+    )
+#to handle the creation of the questionnaire and this is the place where vector_store will meet llm_service CURRENTLY SYNCHRONOUS BUT CAN BE MADE ASYNCHRONOUS IF NEEDED IN THE FUTURE
+async def handle_chunk(chunk: str, metadata: Dict[str, Any], collection_id: str):
+    """
+    Handle a chunk of text and its metadata by generating a questionnaire.
+    """
+    questionnaire = llm_service.generate_questionnaire_from_chunk(chunk)
+    await chunk_store.save_chunk_questionnaire(
+        collection_id=collection_id,
+        questionnaire=questionnaire,
+        metadata=metadata
     )

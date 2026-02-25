@@ -21,6 +21,8 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from app import llm_service
+
 load_dotenv()
 
 # Qdrant Configuration
@@ -115,6 +117,7 @@ def store_pages(
     pages: List[Dict[str, Any]],
     collection_name: str = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    chunk_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> int:
     """
     Store crawled pages as embeddings in the vector database.
@@ -157,16 +160,16 @@ def store_pages(
         for chunk_idx, chunk in enumerate(chunks):
             if not chunk.strip():
                 continue
-
+            metadata = {
+                "url": page["url"],
+                "title": page["title"],
+                "chunk_index": chunk_idx,
+                "total_chunks": len(chunks),
+            }
+            if chunk_callback:
+                chunk_callback(chunk, metadata)
             all_texts.append(chunk)
-            all_metadatas.append(
-                {
-                    "url": page["url"],
-                    "title": page["title"],
-                    "chunk_index": chunk_idx,
-                    "total_chunks": len(chunks),
-                }
-            )
+            all_metadatas.append(metadata)
             chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{page['url']}#{chunk_idx}"))
             all_ids.append(chunk_id)
 

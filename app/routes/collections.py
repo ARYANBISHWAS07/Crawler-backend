@@ -12,6 +12,8 @@ from app import vector_store
 from app import job_store
 from app import collection_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
+from app.crawler import handle_chunk
+import asyncio
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -114,9 +116,10 @@ def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollec
         def embed_progress(current: int, total: int, message: str):
             emit_progress_sync(job_id, current, total, message, stage="embedding")
         
-        # Store in vector database using collection name with progress
-        pages_stored = vector_store.store_pages(data, req.name, progress_callback=embed_progress)
-        
+        # Store in vector database using collection name with progress and creation of questionnaire
+        pages_stored = vector_store.store_pages(data, req.name, progress_callback=embed_progress, chunk_callback=lambda chunk, metadata: asyncio.create_task(
+        handle_chunk(chunk, metadata, collection_id)))
+
         # Update job as completed
         job_store.update_job_sync(job_id, {
             "status": "completed",
