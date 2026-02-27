@@ -300,16 +300,19 @@ def generate_questionnaire_from_chunk(
          "Create a focused questionnaire strictly based on the provided chunk of content."
         ),
         ("human",
-        """Based on the following content chunk, generate 3-5 high-quality questions.
+        """Based on the following content chunk, generate exactly 5 high-quality questions.
 
-        Return the output strictly in this JSON format for the 5 questions:
+Return the output strictly in this JSON format:
 
-        {
-        "questions": [
-            {"id": 1, "question": "..." },
-            {"id": 2, "question": "..." }
-        ]
-        }
+{{
+  "questions": [
+    {{"id": 1, "question": "First question here"}},
+    {{"id": 2, "question": "Second question here"}},
+    {{"id": 3, "question": "Third question here"}},
+    {{"id": 4, "question": "Fourth question here"}},
+    {{"id": 5, "question": "Fifth question here"}}
+  ]
+}}
 
 Content Chunk:
 {chunk}
@@ -317,8 +320,8 @@ Content Chunk:
 Rules:
 - Questions must be strictly based on this chunk only
 - Do not assume missing information
-- Number the questions clearly
 - Do not provide answers
+- Output must be valid JSON only
 """
         )
     ])

@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-async def save_chunk_questionnaire(
+def save_chunk_questionnaire(
     collection_id: str,
     # chunk_content: str,
     questionnaire: str,
@@ -20,5 +20,5 @@ async def save_chunk_questionnaire(
         "created_at": datetime.utcnow()
     }
 
-    await chunk_collection.insert_one(document)
+    chunk_collection.insert_one(document)
     return True

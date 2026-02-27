@@ -7,7 +7,9 @@ from .user import (
     Token,
     TokenData
 )
-
+from .chunk_question import (
+    ChunkQuestionnaire
+)
 from .collection import (
     MessageRole,
     ChatMessage,
@@ -19,6 +21,7 @@ from .collection import (
     CollectionInDB,
     SendMessageRequest,
     ChatHistoryResponse
+    
 )
 
 __all__ = [
@@ -38,5 +41,6 @@ __all__ = [
     "CollectionWithChats",
     "CollectionInDB",
     "SendMessageRequest",
-    "ChatHistoryResponse"
+    "ChatHistoryResponse",
+    "ChunkQuestionnaire"
 ]

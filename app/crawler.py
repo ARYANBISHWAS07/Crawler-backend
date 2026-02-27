@@ -1134,12 +1134,12 @@ def crawl_sync(
         include_report=include_report,
     )
 #to handle the creation of the questionnaire and this is the place where vector_store will meet llm_service CURRENTLY SYNCHRONOUS BUT CAN BE MADE ASYNCHRONOUS IF NEEDED IN THE FUTURE
-async def handle_chunk(chunk: str, metadata: Dict[str, Any], collection_id: str):
+def handle_chunk(chunk: str, metadata: Dict[str, Any], collection_id: str):
     """
     Handle a chunk of text and its metadata by generating a questionnaire.
     """
     questionnaire = llm_service.generate_questionnaire_from_chunk(chunk)
-    await chunk_store.save_chunk_questionnaire(
+    chunk_store.save_chunk_questionnaire(
         collection_id=collection_id,
         questionnaire=questionnaire,
         metadata=metadata

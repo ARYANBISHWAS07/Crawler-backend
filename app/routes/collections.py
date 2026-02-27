@@ -117,8 +117,8 @@ def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollec
             emit_progress_sync(job_id, current, total, message, stage="embedding")
         
         # Store in vector database using collection name with progress and creation of questionnaire
-        pages_stored = vector_store.store_pages(data, req.name, progress_callback=embed_progress, chunk_callback=lambda chunk, metadata: asyncio.create_task(
-        handle_chunk(chunk, metadata, collection_id)))
+        pages_stored = vector_store.store_pages(data, req.name, progress_callback=embed_progress, chunk_callback=lambda chunk, metadata:
+        handle_chunk(chunk, metadata, collection_id))
 
         # Update job as completed
         job_store.update_job_sync(job_id, {
