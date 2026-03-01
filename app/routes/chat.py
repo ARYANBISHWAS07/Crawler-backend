@@ -3,7 +3,7 @@ Chat routes for collection-based conversations.
 Uses Socket.IO for real-time messaging and HTTP endpoints for REST API.
 """
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 import uuid
@@ -13,7 +13,6 @@ from app import vector_store
 from app import llm_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
 
 class CreateSessionRequest(BaseModel):
     collection_id: str
@@ -29,7 +28,7 @@ class MessageResponse(BaseModel):
     id: str
     role: str
     content: str
-    sources: List[dict] = []
+    sources: List[dict] = Field(default_factory=list)
     created_at: str
 
 
@@ -37,12 +36,9 @@ class SessionResponse(BaseModel):
     id: str
     collection_id: str
     title: Optional[str]
-    messages: List[dict]
+    messages: List[dict] = Field(default_factory=list)
     created_at: str
     updated_at: str
-
-
-# Session Management Endpoints
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session(req: CreateSessionRequest):

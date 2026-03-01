@@ -9,7 +9,6 @@ import json
 import asyncio
 import threading
 
-# Create Socket.IO server with proper CORS and transport settings
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins='*',
@@ -20,7 +19,6 @@ sio = socketio.AsyncServer(
     transports=['websocket', 'polling']
 )
 
-# Create ASGI app for Socket.IO - mount at root path
 socket_app = socketio.ASGIApp(
     sio,
     socketio_path='socket.io'
