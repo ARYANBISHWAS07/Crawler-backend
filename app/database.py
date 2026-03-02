@@ -2,6 +2,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure
 import os
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 
@@ -12,20 +13,24 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "scrapper_db")
 # Global database client
 client: AsyncIOMotorClient = None
 db = None
+_connect_lock = asyncio.Lock()
 
 
 async def connect_to_mongodb():
     """Initialize MongoDB connection."""
     global client, db
-    try:
-        client = AsyncIOMotorClient(MONGODB_URL)
-        db = client[DATABASE_NAME]
-        # Verify connection
-        await client.admin.command('ping')
-        print(f"Connected to MongoDB: {DATABASE_NAME}")
-    except ConnectionFailure as e:
-        print(f"Failed to connect to MongoDB: {e}")
-        raise e
+    async with _connect_lock:
+        if client is not None and db is not None:
+            return
+        try:
+            client = AsyncIOMotorClient(MONGODB_URL)
+            db = client[DATABASE_NAME]
+            # Verify connection
+            await client.admin.command('ping')
+            print(f"Connected to MongoDB: {DATABASE_NAME}")
+        except ConnectionFailure as e:
+            print(f"Failed to connect to MongoDB: {e}")
+            raise e
 
 
 async def close_mongodb_connection():
@@ -43,4 +48,6 @@ def get_database():
 
 def get_collection(name: str):
     """Get a specific collection."""
+    if db is None:
+        raise RuntimeError("MongoDB not connected. Call connect_to_mongodb() first.")
     return db[name]

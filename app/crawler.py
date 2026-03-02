@@ -22,6 +22,7 @@ from crawl4ai.deep_crawling.filters import FilterChain, DomainFilter
 from app import llm_service,chunk_store
 
 DEFAULT_MAX_PAGES = 10000
+CRAWL_MAX_PAGES_LIMIT = 5
 ROBOTS_TIMEOUT_SECONDS = 8
 
 
@@ -394,6 +395,7 @@ def _run_crawl_sync_internal(
 
     browser_config = BrowserConfig(headless=True, verbose=False)
     effective_max_pages = max_pages if max_pages > 0 else DEFAULT_MAX_PAGES
+    effective_max_pages = min(effective_max_pages, CRAWL_MAX_PAGES_LIMIT)
     page_timeout_seconds = max(8, CRAWL_PAGE_TIMEOUT_MS // 1000)
 
     results: List[Dict[str, Any]] = []
@@ -675,6 +677,7 @@ async def run_crawl(
 
     # Set max_pages - if 0, use a very high number for "unlimited"
     effective_max_pages = max_pages if max_pages > 0 else DEFAULT_MAX_PAGES
+    effective_max_pages = min(effective_max_pages, CRAWL_MAX_PAGES_LIMIT)
 
     # Crawler run configuration with deep crawl strategy
     run_config = CrawlerRunConfig(

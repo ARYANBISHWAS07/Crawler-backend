@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
+from functools import lru_cache
 
 from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -26,7 +27,15 @@ from app import llm_service
 load_dotenv()
 
 # Qdrant Configuration
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_HOST = os.getenv("QDRANT_HOST")
+QDRANT_PORT = os.getenv("QDRANT_PORT", "6333")
+if not QDRANT_URL:
+    if QDRANT_HOST:
+        QDRANT_URL = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
+    else:
+        QDRANT_URL = "http://localhost:6333"
+
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_DEFAULT_COLLECTION = os.getenv("QDRANT_COLLECTION", "scraped_data")
 QDRANT_TIMEOUT_SECONDS = float(os.getenv("QDRANT_TIMEOUT_SECONDS", "60"))
@@ -57,6 +66,7 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 
+@lru_cache(maxsize=1024)
 def _safe_collection_name(collection_name: Optional[str]) -> str:
     """Map app collection names to Qdrant-compatible names deterministically."""
     raw_name = (collection_name or QDRANT_DEFAULT_COLLECTION).strip()
@@ -83,6 +93,8 @@ def _collection_exists_in_qdrant(collection_name: str) -> bool:
             return True
         except Exception:
             return False
+    except Exception:
+        return False
 
 
 def _ensure_collection(collection_name: Optional[str] = None) -> str:
@@ -98,8 +110,12 @@ def _ensure_collection(collection_name: Optional[str] = None) -> str:
     return name
 
 
-# Ensure the default collection exists at startup
-_ensure_collection()
+# Ensure the default collection exists at startup, but do not crash if Qdrant
+# is still starting or unreachable.
+try:
+    _ensure_collection()
+except Exception as exc:
+    print(f"Warning: Qdrant not reachable at startup ({QDRANT_URL}): {exc}")
 
 
 def chunk_text(text: str) -> List[str]:

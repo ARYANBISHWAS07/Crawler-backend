@@ -8,6 +8,7 @@ import asyncio
 from app.crawler import crawl_sync
 from app import vector_store
 from app.database import connect_to_mongodb, close_mongodb_connection
+from app.redis_client import connect_redis, close_redis
 from app.routes import users_router, chat_router, collections_router
 from app.socketio_manager import socket_app, sio, set_main_loop
 
@@ -18,6 +19,7 @@ import uuid
 async def lifespan(app: FastAPI):
     # Startup: Connect to MongoDB
     await connect_to_mongodb()
+    await connect_redis()
     
     # Capture the main event loop for background tasks
     loop = asyncio.get_event_loop()
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown: Close connections
     await close_mongodb_connection()
+    await close_redis()
 
 
 app = FastAPI(

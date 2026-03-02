@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 crawl4ai
 qdrant-client
+redis>=5.0.0
 python-dotenv
 pydantic[email]
 email-validator
