@@ -11,6 +11,7 @@ from app.database import connect_to_mongodb, close_mongodb_connection
 from app.redis_client import connect_redis, close_redis
 from app.routes import users_router, chat_router, collections_router
 from app.socketio_manager import socket_app, sio, set_main_loop
+from extension.main import app as extension_app
 
 import uuid
 
@@ -52,6 +53,7 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(chat_router)
 app.include_router(collections_router)
+
 
 # Mount Socket.IO app at /socket.io path
 app.mount("/", socket_app)
