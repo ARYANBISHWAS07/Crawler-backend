@@ -41,13 +41,10 @@ def get_main_loop() -> Optional[asyncio.AbstractEventLoop]:
     """Get the main event loop reference."""
     return _main_loop
 
-
-# Connection handlers
 @sio.event
 async def connect(sid, environ, auth=None):
     """Handle client connection."""
     global _main_loop
-    # Capture the main event loop on first connection
     if _main_loop is None:
         _main_loop = asyncio.get_event_loop()
     print(f"🔌 Client connected: {sid}")
@@ -58,7 +55,6 @@ async def connect(sid, environ, auth=None):
 async def disconnect(sid):
     """Handle client disconnection."""
     print(f"🔌 Client disconnected: {sid}")
-    # Remove from all rooms
     for room, clients in list(connected_clients.items()):
         clients.discard(sid)
         if not clients:
@@ -78,15 +74,11 @@ def _track_leave(room: str, sid: str) -> None:
     if not clients:
         connected_clients.pop(room, None)
 
-
-# Ping handler to keep connection alive
 @sio.event
 async def ping(sid):
     """Handle ping from client."""
     await sio.emit('pong', {'timestamp': asyncio.get_event_loop().time()}, to=sid)
 
-
-# Room management for job/collection updates
 @sio.event
 async def join_job(sid, data):
     """Join a room to receive updates for a specific job."""

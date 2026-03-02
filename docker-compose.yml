@@ -1,6 +1,11 @@
 version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   qdrant:
     image: qdrant/qdrant
     ports:
@@ -20,5 +25,6 @@ services:
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "3000:3000"

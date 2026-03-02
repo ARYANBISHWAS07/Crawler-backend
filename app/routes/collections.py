@@ -14,6 +14,7 @@ from app import collection_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
 from app.crawler import handle_chunk
 import asyncio
+from app.redis_client import cache_get_json, cache_set_json, cache_delete, publish_event
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -210,6 +211,11 @@ async def create_collection(
         "updated_at": now
     }
     await collection_store.create_collection(collection_data)
+    await cache_delete(
+        "collections:all",
+        f"collection:name:{req.name}",
+    )
+    await publish_event("collections.updated", {"collection_id": collection_id, "updates": {"status": "pending"}})
     
     # Create associated job
     job_data = {
@@ -248,13 +254,25 @@ async def create_collection(
 @router.get("/")
 async def list_collections(user_id: Optional[str] = None):
     """List all collections, optionally filtered by user."""
+    cache_key = f"collections:user:{user_id}" if user_id else "collections:all"
+    cached = await cache_get_json(cache_key)
+    if cached:
+        return cached
+
     collections = await collection_store.get_all_collections(user_id)
-    return {"collections": collections, "count": len(collections)}
+    payload = {"collections": collections, "count": len(collections)}
+    await cache_set_json(cache_key, payload, ttl_seconds=60)
+    return payload
 
 
 @router.get("/{collection_id}")
 async def get_collection(collection_id: str):
     """Get a specific collection with its details."""
+    cache_key = f"collection:id:{collection_id}"
+    cached = await cache_get_json(cache_key)
+    if cached:
+        return cached
+
     collection = await collection_store.get_collection_by_id(collection_id)
     if not collection:
         raise HTTPException(
@@ -269,18 +287,25 @@ async def get_collection(collection_id: str):
     except:
         collection["vector_stats"] = None
     
+    await cache_set_json(cache_key, collection, ttl_seconds=60)
     return collection
 
 
 @router.get("/name/{name}")
 async def get_collection_by_name(name: str):
     """Get a collection by its name."""
+    cache_key = f"collection:name:{name}"
+    cached = await cache_get_json(cache_key)
+    if cached:
+        return cached
+
     collection = await collection_store.get_collection_by_name(name)
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found"
         )
+    await cache_set_json(cache_key, collection, ttl_seconds=60)
     return collection
 
 
@@ -301,7 +326,12 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found"
         )
-    
+    await cache_delete(
+        "collections:all",
+        f"collection:id:{collection_id}",
+        f"collection:name:{collection.get('name')}",
+    )
+    await publish_event("collections.updated", {"collection_id": collection_id, "updates": updates})
     return collection
 
 
@@ -327,6 +357,12 @@ async def delete_collection(collection_id: str):
     
     # Delete collection
     await collection_store.delete_collection(collection_id)
+    await cache_delete(
+        "collections:all",
+        f"collection:id:{collection_id}",
+        f"collection:name:{collection.get('name')}",
+    )
+    await publish_event("collections.updated", {"collection_id": collection_id, "deleted": True})
     
     return {"message": "Collection deleted", "collection_id": collection_id}
 
