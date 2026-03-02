@@ -23,6 +23,14 @@ from .collection import (
     ChatHistoryResponse
     
 )
+from .website_session import (
+    WebsiteChatMessage,
+    WebsiteSession,
+    WebsiteSessionSummary,
+    WebsiteSessionCreateRequest,
+    WebsiteScrapePageRequest,
+    WebsiteMessageRequest,
+)
 
 __all__ = [
     "UserCreate",
@@ -42,5 +50,11 @@ __all__ = [
     "CollectionInDB",
     "SendMessageRequest",
     "ChatHistoryResponse",
-    "ChunkQuestionnaire"
+    "ChunkQuestionnaire",
+    "WebsiteChatMessage",
+    "WebsiteSession",
+    "WebsiteSessionSummary",
+    "WebsiteSessionCreateRequest",
+    "WebsiteScrapePageRequest",
+    "WebsiteMessageRequest",
 ]
