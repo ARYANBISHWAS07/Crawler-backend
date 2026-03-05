@@ -13,6 +13,8 @@ from app import job_store
 from app import collection_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
 from app.crawler import handle_chunk
+from app.llm_service import generate_learning_path
+from app.models.collection import GenerateLearningPathRequest, LearningPathResponse
 import asyncio
 from app.redis_client import cache_get_json, cache_set_json, cache_delete, publish_event
 
@@ -471,3 +473,94 @@ async def get_collection_crawl_logs(
         "limit": limit,
         "logs": sliced_logs,
     }
+
+
+@router.post("/learning-path", response_model=LearningPathResponse)
+async def generate_learning_path_from_urls(req: GenerateLearningPathRequest):
+    """
+    Generate a structured learning path from a list of URLs.
+    
+    Takes a list of URLs (typically from a sitemap) and uses AI to:
+    - Identify main learning topics
+    - Group related URLs into concepts/modules
+    - Infer prerequisite relationships
+    - Organize topics from beginner to advanced
+    
+    Returns a directed acyclic graph (DAG) representing the learning path.
+    """
+    if not req.urls:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URLs list cannot be empty"
+        )
+    
+    if len(req.urls) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 500 URLs allowed per request"
+        )
+    
+    try:
+        result = generate_learning_path(req.urls)
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate learning path: {str(e)}"
+        )
+
+
+@router.post("/{collection_id}/learning-path", response_model=LearningPathResponse)
+async def generate_learning_path_for_collection(collection_id: str):
+    """
+    Generate a structured learning path from a collection's crawled URLs.
+    
+    Uses the URLs that were crawled during the collection's scraping job
+    to generate a learning path.
+    """
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+    
+    job_id = collection.get("job_id")
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No job associated with this collection"
+        )
+    
+    job = await job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    routes_crawled = job.get("routes_crawled", [])
+    if not routes_crawled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No crawled URLs found for this collection"
+        )
+    
+    try:
+        result = generate_learning_path(routes_crawled)
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate learning path: {str(e)}"
+        )
