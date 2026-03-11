@@ -11,7 +11,7 @@ from app.database import connect_to_mongodb, close_mongodb_connection
 from app.redis_client import connect_redis, close_redis
 from app.routes import users_router, chat_router, collections_router
 from app.socketio_manager import socket_app, sio, set_main_loop
-from extension.main import app as extension_app
+
 
 import uuid
 
@@ -57,3 +57,9 @@ app.include_router(collections_router)
 
 # Mount Socket.IO app at /socket.io path
 app.mount("/", socket_app)
+
+
+if __name__=="__main__":
+    import uvicorn
+    uvicorn.run(app, host="localhost", port=8000)
+    
