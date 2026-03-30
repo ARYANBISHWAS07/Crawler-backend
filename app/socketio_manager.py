@@ -5,9 +5,7 @@ Fixed connection handling with proper ASGI integration.
 """
 import socketio
 from typing import Optional, Dict
-import json
 import asyncio
-import threading
 
 sio = socketio.AsyncServer(
     async_mode='asgi',
@@ -124,8 +122,6 @@ async def leave_collection(sid, data):
         _track_leave(room, sid)
         print(f"Client {sid} left collection room: {collection_id}")
 
-
-# Chat room management
 @sio.event
 async def join_chat(sid, data):
     """Join a chat room for a collection."""
@@ -199,7 +195,6 @@ async def send_message(sid, data):
         await collection_store.create_chat_session(collection_id, session_data)
         await sio.emit('session_created', {'session_id': session_id}, to=sid)
     
-    # Create user message
     user_message_id = str(uuid.uuid4())
     user_message = {
         "id": user_message_id,
@@ -223,24 +218,19 @@ async def send_message(sid, data):
     await sio.emit('typing', {'session_id': session_id}, room=room)
     
     try:
-        # Get context from vector store
-        context = vector_store.get_context_for_question(
-            query=message,
-            top_k=top_k,
-            collection_name=collection_name
+        # Get context and sources from vector store without blocking the event loop
+        context, sources = await asyncio.to_thread(
+            vector_store.get_context_and_sources,
+            message,
+            top_k,
+            collection_name,
         )
-        
-        # Get source documents
-        sources = vector_store.search(
-            query=message,
-            top_k=top_k,
-            collection_name=collection_name
-        )
-        
-        # Generate AI response using LangChain
-        answer = llm_service.generate_chat_response(
+
+        # Generate AI response without blocking the event loop
+        answer = await asyncio.to_thread(
+            llm_service.generate_chat_response,
             question=message,
-            context=context
+            context=context,
         )
         
         # Create assistant message

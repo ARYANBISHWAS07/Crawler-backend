@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import asyncio
 
 from app import collection_store
 from app import vector_store
@@ -122,8 +123,6 @@ async def delete_session(collection_id: str, session_id: str):
     return {"message": "Session deleted", "session_id": session_id}
 
 
-# Message Endpoints (REST API alternative to Socket.IO)
-
 @router.post("/message/{collection_id}/{session_id}")
 async def send_message(
     collection_id: str,
@@ -134,15 +133,13 @@ async def send_message(
     Send a message and get AI response (REST API).
     For real-time updates, use Socket.IO instead.
     """
-    # Verify collection
     collection = await collection_store.get_collection_by_id(collection_id)
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found"
         )
-    
-    # Verify session
+
     session = await collection_store.get_chat_session(collection_id, session_id)
     if not session:
         raise HTTPException(
@@ -151,8 +148,6 @@ async def send_message(
         )
     
     collection_name = collection.get('name')
-    
-    # Create and save user message
     user_message_id = str(uuid.uuid4())
     user_message = {
         "id": user_message_id,
@@ -164,27 +159,19 @@ async def send_message(
     await collection_store.add_message_to_session(collection_id, session_id, user_message)
     
     try:
-        # Get context from vector store
-        context = vector_store.get_context_for_question(
-            query=req.message,
-            top_k=req.top_k,
-            collection_name=collection_name
+        context, sources = await asyncio.to_thread(
+            vector_store.get_context_and_sources,
+            req.message,
+            req.top_k,
+            collection_name,
         )
-        
-        # Get source documents
-        sources = vector_store.search(
-            query=req.message,
-            top_k=req.top_k,
-            collection_name=collection_name
-        )
-        
-        # Generate AI response
-        answer = llm_service.generate_chat_response(
+        answer = await asyncio.to_thread(
+            llm_service.generate_chat_response,
             question=req.message,
-            context=context
+            context=context,
         )
         
-        # Create and save assistant message
+
         assistant_message_id = str(uuid.uuid4())
         assistant_message = {
             "id": assistant_message_id,
@@ -342,7 +329,8 @@ async def send_website_message(session_id: str, req: WebsiteMessageRequest):
 
     try:
         context = (session.get("context", "") or "")[:WEBSITE_CONTEXT_LIMIT]
-        answer = llm_service.generate_chat_response(
+        answer = await asyncio.to_thread(
+            llm_service.generate_chat_response,
             question=req.message,
             context=context,
         )
