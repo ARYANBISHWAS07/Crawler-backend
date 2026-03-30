@@ -122,6 +122,7 @@ class LearningNode(BaseModel):
     """A node in the learning path graph representing a topic."""
     id: str
     label: str
+    summary: Optional[str] = None
     module: Optional[str] = None
     difficulty: LearningLevel = LearningLevel.BEGINNER
     type: NodeType = NodeType.CORE_TOPIC

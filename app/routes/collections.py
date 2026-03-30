@@ -11,6 +11,7 @@ from app.crawler import crawl_sync
 from app import vector_store
 from app import job_store
 from app import collection_store
+from app import learning_node_summary_store
 from app.socketio_manager import emit_job_update_sync, emit_collection_update_sync, emit_progress_sync
 from app.crawler import handle_chunk
 from app.llm_service import generate_learning_path
@@ -553,6 +554,28 @@ async def generate_learning_path_for_collection(collection_id: str):
     
     try:
         result = generate_learning_path(routes_crawled)
+        await learning_node_summary_store.replace_collection_node_summaries(
+            collection_id=collection_id,
+            nodes=result.get("nodes", []),
+        )
+        await collection_store.update_collection(collection_id, {
+            "learning_path_graph": result,
+            "learning_path_generated_at": datetime.utcnow().isoformat(),
+        })
+        await cache_delete(
+            "collections:all",
+            f"collection:id:{collection_id}",
+            f"collection:name:{collection.get('name')}",
+        )
+        await publish_event(
+            "collections.updated",
+            {
+                "collection_id": collection_id,
+                "updates": {
+                    "learning_path_generated_at": datetime.utcnow().isoformat(),
+                },
+            },
+        )
         return result
     except ValueError as e:
         raise HTTPException(
@@ -564,3 +587,88 @@ async def generate_learning_path_for_collection(collection_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate learning path: {str(e)}"
         )
+
+
+@router.get("/{collection_id}/learning-path", response_model=LearningPathResponse)
+async def get_learning_path_for_collection(collection_id: str):
+    """
+    Get the latest generated learning path graph for a collection.
+    """
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+
+    learning_path_graph = collection.get("learning_path_graph")
+    if not learning_path_graph:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Learning path not generated yet. Call POST /collections/{collection_id}/learning-path first."
+        )
+
+    return learning_path_graph
+
+
+@router.get("/{collection_id}/learning-path/summaries")
+async def get_learning_path_summaries_for_collection(collection_id: str):
+    """Get persisted learning-node summaries for a collection."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+
+    summaries = await learning_node_summary_store.get_collection_node_summaries(collection_id)
+    return {
+        "collection_id": collection_id,
+        "count": len(summaries),
+        "summaries": summaries,
+    }
+
+
+@router.get("/{collection_id}/learning-path/nodes/{node_id}/summary")
+async def get_learning_path_node_summary(collection_id: str, node_id: str):
+    """
+    Get the summary for a single learning-path node.
+    Use this endpoint when a user clicks a node in the frontend.
+    """
+    collection = await collection_store.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+
+    summary_doc = await learning_node_summary_store.get_collection_node_summary(collection_id, node_id)
+    if summary_doc:
+        return {
+            "collection_id": collection_id,
+            "node_id": node_id,
+            "node_label": summary_doc.get("node_label", ""),
+            "summary": summary_doc.get("summary", ""),
+            "difficulty": summary_doc.get("difficulty"),
+            "module": summary_doc.get("module"),
+            "type": summary_doc.get("node_type"),
+        }
+
+    # Fallback: try stored graph if summary collection has not been populated yet
+    graph = collection.get("learning_path_graph", {})
+    for node in graph.get("nodes", []):
+        if node.get("id") == node_id and node.get("summary"):
+            return {
+                "collection_id": collection_id,
+                "node_id": node_id,
+                "node_label": node.get("label", ""),
+                "summary": node.get("summary", ""),
+                "difficulty": node.get("difficulty"),
+                "module": node.get("module"),
+                "type": node.get("type"),
+            }
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Summary not found for node '{node_id}'"
+    )

@@ -31,6 +31,9 @@ from .website_session import (
     WebsiteScrapePageRequest,
     WebsiteMessageRequest,
 )
+from .learning_node_summary import (
+    LearningNodeSummary,
+)
 
 __all__ = [
     "UserCreate",
@@ -57,4 +60,5 @@ __all__ = [
     "WebsiteSessionCreateRequest",
     "WebsiteScrapePageRequest",
     "WebsiteMessageRequest",
+    "LearningNodeSummary",
 ]

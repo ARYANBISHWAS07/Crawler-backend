@@ -410,6 +410,110 @@ Return ONLY valid JSON in the following format (no explanations or markdown):
 
 IMPORTANT: Respond with ONLY the JSON object. No preamble, no markdown code fences, no explanation."""
 
+NODE_SUMMARY_SYSTEM_PROMPT = """You are an expert curriculum writer.
+
+You will receive learning-path nodes from a documentation graph.
+For each node, generate a concise 3-4 line summary that helps a learner understand:
+- what the topic is,
+- why it matters,
+- what they should be able to do after learning it.
+
+Return ONLY valid JSON in this format:
+{{
+  "summaries": [
+    {{
+      "id": "node-id",
+      "summary": "Line 1\\nLine 2\\nLine 3"
+    }}
+  ]
+}}
+
+Rules:
+- Include exactly one summary per node id provided.
+- Keep each summary to 3-4 short lines.
+- Use plain text only.
+- Do not add markdown or explanations outside JSON."""
+
+
+def _fallback_node_summary(node: Dict[str, Any]) -> str:
+    label = node.get("label", "This topic")
+    difficulty = node.get("difficulty", "intermediate")
+    return (
+        f"{label} introduces the core ideas at the {difficulty} level.\n"
+        f"It matters because later concepts depend on understanding this topic well.\n"
+        f"After this, you should be able to explain and apply {label} in practice."
+    )
+
+
+def generate_node_summaries(
+    nodes: List[Dict[str, Any]],
+    model: str = None,
+    max_tokens: int = 2500
+) -> Dict[str, str]:
+    """
+    Generate short 3-4 line summaries for each learning-path node.
+    """
+    import json
+
+    if not nodes:
+        return {}
+
+    chat_llm = get_llm(model=model, temperature=0.4, max_tokens=max_tokens)
+
+    nodes_text = "\n".join(
+        (
+            f"- id: {node.get('id', '')}\n"
+            f"  label: {node.get('label', '')}\n"
+            f"  module: {node.get('module', '')}\n"
+            f"  difficulty: {node.get('difficulty', '')}\n"
+            f"  type: {node.get('type', '')}"
+        )
+        for node in nodes
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", NODE_SUMMARY_SYSTEM_PROMPT),
+        ("human", """Generate summaries for these nodes:
+
+{nodes}
+""")
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+    response = chain.invoke({"nodes": nodes_text})
+
+    if not response or not response.strip():
+        return {}
+
+    response = response.strip()
+    if response.startswith("```json"):
+        response = response[7:]
+    if response.startswith("```"):
+        response = response[3:]
+    if response.endswith("```"):
+        response = response[:-3]
+    response = response.strip()
+
+    if not response.startswith("{"):
+        start_idx = response.find("{")
+        end_idx = response.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return {}
+
+    summaries: Dict[str, str] = {}
+    for item in parsed.get("summaries", []):
+        node_id = item.get("id")
+        summary = item.get("summary")
+        if node_id and isinstance(summary, str):
+            summaries[node_id] = summary.strip()
+
+    return summaries
+
 
 def generate_learning_path(
     urls: List[str],
@@ -524,6 +628,11 @@ Analyze these URLs and generate the learning roadmap JSON with modules, nodes, e
             else:
                 node["position"]["x"] = node["position"].get("x", 0)
                 node["position"]["y"] = node["position"].get("y", 0)
+
+        # Generate short summaries for each topic node
+        summary_map = generate_node_summaries(result["nodes"], model=model)
+        for node in result["nodes"]:
+            node["summary"] = summary_map.get(node.get("id")) or _fallback_node_summary(node)
                 
         return result
         
@@ -559,5 +668,3 @@ Analyze these URLs and generate the learning roadmap JSON with modules, nodes, e
     
     for chunk in chain.stream({"urls": urls_text}):
         yield chunk
-
-
