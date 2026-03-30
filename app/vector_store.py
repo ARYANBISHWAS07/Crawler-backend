@@ -299,27 +299,42 @@ def search(query: str, top_k: int = 5, collection_name: str = None) -> List[Dict
     return formatted_results
 
 
+def _build_context_from_results(results: List[Dict[str, Any]]) -> str:
+    if not results:
+        return "No relevant information found."
+
+    context_parts = []
+    for i, result in enumerate(results, 1):
+        content = result.get("content", "")
+        content_preview = content[:1500] + "..." if len(content) > 1500 else content
+        context_parts.append(
+            f"[Source {i}: {result.get('title', '')}]\n"
+            f"URL: {result.get('url', '')}\n"
+            f"Content: {content_preview}\n"
+        )
+
+    return "\n---\n".join(context_parts)
+
+
 def get_context_for_question(query: str, top_k: int = 3, collection_name: str = None) -> str:
     """
     Get relevant context for answering a question.
     Formats the search results into a context string for LLM.
     """
     results = search(query, top_k=top_k, collection_name=collection_name)
+    return _build_context_from_results(results)
 
-    if not results:
-        return "No relevant information found."
 
-    context_parts = []
-    for i, result in enumerate(results, 1):
-        content = result["content"]
-        content_preview = content[:1500] + "..." if len(content) > 1500 else content
-        context_parts.append(
-            f"[Source {i}: {result['title']}]\n"
-            f"URL: {result['url']}\n"
-            f"Content: {content_preview}\n"
-        )
-
-    return "\n---\n".join(context_parts)
+def get_context_and_sources(
+    query: str,
+    top_k: int = 3,
+    collection_name: str = None,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """
+    Retrieve sources once and build the context string from them.
+    """
+    results = search(query, top_k=top_k, collection_name=collection_name)
+    return _build_context_from_results(results), results
 
 
 def clear_collection(collection_name: str = None):
