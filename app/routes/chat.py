@@ -8,6 +8,7 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 import asyncio
+import re
 
 from app import collection_store
 from app import vector_store
@@ -29,6 +30,16 @@ from app.routes.scrape import (
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 WEBSITE_CONTEXT_LIMIT = 12000
+CHAT_HISTORY_LIMIT = 8
+FOLLOW_UP_PATTERNS = [
+    r"\bmore info\b",
+    r"\btell me more\b",
+    r"\bmore details\b",
+    r"\belaborate\b",
+    r"\bcontinue\b",
+    r"\bexpand\b",
+    r"\bcan you explain more\b",
+]
 
 class CreateSessionRequest(BaseModel):
     collection_id: str
@@ -55,6 +66,41 @@ class SessionResponse(BaseModel):
     messages: List[dict] = Field(default_factory=list)
     created_at: str
     updated_at: str
+
+
+def _is_follow_up_message(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    return any(re.search(pattern, text) for pattern in FOLLOW_UP_PATTERNS)
+
+
+def _infer_topic_from_session(messages: List[dict]) -> Optional[str]:
+    """
+    Infer the active topic from the latest non-follow-up user message.
+    """
+    for msg in reversed(messages or []):
+        if msg.get("role") != "user":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if _is_follow_up_message(content):
+            continue
+        return content
+    return None
+
+
+def _resolve_retrieval_query(message: str, session_messages: List[dict]) -> str:
+    """
+    Resolve ambiguous follow-ups to the previous topic for vector retrieval.
+    """
+    if not _is_follow_up_message(message):
+        return message
+    topic = _infer_topic_from_session(session_messages)
+    if not topic:
+        return message
+    return f"{message.strip()} about: {topic}"
 
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -148,6 +194,7 @@ async def send_message(
         )
     
     collection_name = collection.get('name')
+    prior_messages = session.get("messages", [])
     user_message_id = str(uuid.uuid4())
     user_message = {
         "id": user_message_id,
@@ -159,16 +206,40 @@ async def send_message(
     await collection_store.add_message_to_session(collection_id, session_id, user_message)
     
     try:
+        retrieval_query = _resolve_retrieval_query(req.message, prior_messages)
+        retrieval_top_k = max(req.top_k, 6)
+
         context, sources = await asyncio.to_thread(
             vector_store.get_context_and_sources,
-            req.message,
-            req.top_k,
+            retrieval_query,
+            retrieval_top_k,
             collection_name,
+            0.4,
         )
+        if not sources:
+            # Retry without threshold so we can still answer when embeddings are sparse.
+            context, sources = await asyncio.to_thread(
+                vector_store.get_context_and_sources,
+                retrieval_query,
+                retrieval_top_k,
+                collection_name,
+            )
+        history_for_llm = [
+            {"role": m.get("role"), "content": m.get("content", "")}
+            for m in prior_messages[-CHAT_HISTORY_LIMIT:]
+            if m.get("role") in {"user", "assistant"} and m.get("content")
+        ]
+        history_for_llm.append({"role": "user", "content": req.message})
+
         answer = await asyncio.to_thread(
-            llm_service.generate_chat_response,
-            question=req.message,
+            llm_service.chat_with_history,
+            messages=history_for_llm,
             context=context,
+            system_prompt=(
+                f"{llm_service.DEFAULT_SYSTEM_PROMPT}\n\n"
+                "Use conversation history to resolve references like 'more info' or 'that'. "
+                "When asked for more information, add new details from context and avoid repeating prior text."
+            ),
         )
         
 
@@ -178,7 +249,11 @@ async def send_message(
             "role": "assistant",
             "content": answer,
             "sources": [
-                {"url": s["url"], "title": s["title"], "similarity": s["similarity"]}
+                {
+                    "url": s.get("url", ""),
+                    "title": s.get("title", ""),
+                    "similarity": s.get("similarity", 0.0),
+                }
                 for s in sources
             ],
             "created_at": datetime.utcnow().isoformat()

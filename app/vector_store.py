@@ -251,7 +251,12 @@ def store_pages(
     return total_chunks
 
 
-def search(query: str, top_k: int = 5, collection_name: str = None) -> List[Dict[str, Any]]:
+def search(
+    query: str,
+    top_k: int = 5,
+    collection_name: str = None,
+    min_similarity: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     """
     Search for relevant content based on semantic similarity.
     Uses LangChain embeddings for query encoding.
@@ -287,12 +292,15 @@ def search(query: str, top_k: int = 5, collection_name: str = None) -> List[Dict
     formatted_results = []
     for point in search_results or []:
         payload = point.payload or {}
+        score = float(point.score or 0.0)
+        if min_similarity is not None and score < min_similarity:
+            continue
         formatted_results.append(
             {
                 "content": payload.get("content", ""),
                 "url": payload.get("url", ""),
                 "title": payload.get("title", ""),
-                "similarity": float(point.score or 0.0),
+                "similarity": score,
             }
         )
 
@@ -329,11 +337,17 @@ def get_context_and_sources(
     query: str,
     top_k: int = 3,
     collection_name: str = None,
+    min_similarity: Optional[float] = None,
 ) -> tuple[str, List[Dict[str, Any]]]:
     """
     Retrieve sources once and build the context string from them.
     """
-    results = search(query, top_k=top_k, collection_name=collection_name)
+    results = search(
+        query,
+        top_k=top_k,
+        collection_name=collection_name,
+        min_similarity=min_similarity,
+    )
     return _build_context_from_results(results), results
 
 
