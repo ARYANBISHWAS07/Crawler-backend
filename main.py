@@ -8,8 +8,10 @@ import asyncio
 from app.crawler import crawl_sync
 from app import vector_store
 from app.database import connect_to_mongodb, close_mongodb_connection
+from app.redis_client import connect_redis, close_redis
 from app.routes import users_router, chat_router, collections_router
 from app.socketio_manager import socket_app, sio, set_main_loop
+# from extension.main import app as extension_app
 
 import uuid
 
@@ -18,16 +20,18 @@ import uuid
 async def lifespan(app: FastAPI):
     # Startup: Connect to MongoDB
     await connect_to_mongodb()
+    await connect_redis()
     
     # Capture the main event loop for background tasks
     loop = asyncio.get_event_loop()
     set_main_loop(loop)
-    print(f"✅ Main event loop captured for Socket.IO emissions")
+    print(f"Main event loop captured for Socket.IO emissions")
     
     yield
     
     # Shutdown: Close connections
     await close_mongodb_connection()
+    await close_redis()
 
 
 app = FastAPI(
@@ -49,6 +53,7 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(chat_router)
 app.include_router(collections_router)
+
 
 # Mount Socket.IO app at /socket.io path
 app.mount("/", socket_app)

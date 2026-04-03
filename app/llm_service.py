@@ -235,3 +235,436 @@ def summarize_content(
     chain = prompt | chat_llm | StrOutputParser()
     
     return chain.invoke({"content": content})
+
+
+def generate_questionnaire_from_summary(
+    summary: str,
+    model: str = None,
+    max_tokens: int = 800
+) -> str:
+    """
+    Generate a structured questionnaire based on summarized content.
+    
+    Args:
+        summary: The summarized content
+        model: Optional model override
+        max_tokens: Maximum length of output
+        
+    Returns:
+        Questionnaire string
+    """
+
+    chat_llm = get_llm(model=model, temperature=0.6, max_tokens=max_tokens)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", 
+         "You are an expert educational content designer. "
+         "Your job is to generate a high-quality questionnaire "
+         "based strictly on the provided summary."
+        ),
+        ("human",
+         """Based on the following summarized content, create a well-structured questionnaire.
+
+Summary:
+{summary}
+
+Instructions:
+- Create 5-10 questions
+- Include a mix of conceptual and analytical questions
+- Keep questions clear and concise
+- Do not include answers
+- Number the questions clearly
+"""
+        )
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+
+    return chain.invoke({"summary": summary})
+
+
+def generate_questionnaire_from_chunk(
+    chunk: str,
+    model: str = None,
+    max_tokens: int = 600
+) -> str:
+    """
+    Generate a questionnaire for a single chunk of crawled data.
+    """
+
+    chat_llm = get_llm(model=model, temperature=0.6, max_tokens=max_tokens)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are an expert instructional designer. "
+         "Create a focused questionnaire strictly based on the provided chunk of content."
+        ),
+        ("human",
+        """Based on the following content chunk, generate exactly 5 high-quality questions.
+
+Return the output strictly in this JSON format:
+
+{{
+  "questions": [
+    {{"id": 1, "question": "First question here"}},
+    {{"id": 2, "question": "Second question here"}},
+    {{"id": 3, "question": "Third question here"}},
+    {{"id": 4, "question": "Fourth question here"}},
+    {{"id": 5, "question": "Fifth question here"}}
+  ]
+}}
+
+Content Chunk:
+{chunk}
+
+Rules:
+- Questions must be strictly based on this chunk only
+- Do not assume missing information
+- Do not provide answers
+- Output must be valid JSON only
+"""
+        )
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+
+    return chain.invoke({"chunk": chunk})
+
+
+# Learning Path Generation Prompt
+LEARNING_PATH_SYSTEM_PROMPT = """You are an expert curriculum architect and UI information designer.
+
+Your task is to transform website documentation or sitemap URLs into a
+professional learning roadmap graph suitable for a modern web application UI.
+
+The output will be used to render an interactive learning graph similar to
+professional learning platforms.
+
+GOALS:
+- Extract the most important learning topics
+- Organize them into logical modules
+- Build a prerequisite graph
+- Generate UI metadata for visualization
+
+RULES:
+1. Topics must follow a logical learning progression
+2. The graph must be a Directed Acyclic Graph (no circular dependencies)
+3. Merge duplicate or similar topics
+4. Prefer concise topic names (1–3 words)
+5. Limit the roadmap to the most important concepts (max 15-20 nodes)
+6. Organize topics into modules when possible
+7. Difficulty must increase gradually
+8. Use URL hierarchy to infer structure
+9. Ignore irrelevant pages like login, privacy, terms, blog, or marketing pages
+
+UI DESIGN REQUIREMENTS:
+Return UI metadata for visualization:
+
+difficulty colors:
+- beginner → green
+- intermediate → yellow  
+- advanced → red
+
+node types:
+- core_topic (main concepts)
+- sub_topic (supporting concepts)
+
+layout style:
+- top-to-bottom learning progression
+- position.y should increase with difficulty (beginner=0, intermediate=200, advanced=400)
+- position.x should spread nodes horizontally within same level
+
+Return ONLY valid JSON in the following format (no explanations or markdown):
+
+{{
+  "modules": [
+    {{
+      "id": "module-id",
+      "title": "Module Name",
+      "description": "Short description"
+    }}
+  ],
+  "nodes": [
+    {{
+      "id": "topic-id",
+      "label": "Topic Name",
+      "module": "module-id",
+      "difficulty": "beginner | intermediate | advanced",
+      "type": "core_topic | sub_topic",
+      "position": {{"x": 0, "y": 0}}
+    }}
+  ],
+  "edges": [
+    {{
+      "source": "topic-id",
+      "target": "topic-id",
+      "type": "prerequisite"
+    }}
+  ],
+  "learning_path": [
+    "Topic 1",
+    "Topic 2",
+    "Topic 3"
+  ]
+}}
+
+IMPORTANT: Respond with ONLY the JSON object. No preamble, no markdown code fences, no explanation."""
+
+NODE_SUMMARY_SYSTEM_PROMPT = """You are an expert curriculum writer.
+
+You will receive learning-path nodes from a documentation graph.
+For each node, generate a concise 3-4 line summary that helps a learner understand:
+- what the topic is,
+- why it matters,
+- what they should be able to do after learning it.
+
+Return ONLY valid JSON in this format:
+{{
+  "summaries": [
+    {{
+      "id": "node-id",
+      "summary": "Line 1\\nLine 2\\nLine 3"
+    }}
+  ]
+}}
+
+Rules:
+- Include exactly one summary per node id provided.
+- Keep each summary to 3-4 short lines.
+- Use plain text only.
+- Do not add markdown or explanations outside JSON."""
+
+
+def _fallback_node_summary(node: Dict[str, Any]) -> str:
+    label = node.get("label", "This topic")
+    difficulty = node.get("difficulty", "intermediate")
+    return (
+        f"{label} introduces the core ideas at the {difficulty} level.\n"
+        f"It matters because later concepts depend on understanding this topic well.\n"
+        f"After this, you should be able to explain and apply {label} in practice."
+    )
+
+
+def generate_node_summaries(
+    nodes: List[Dict[str, Any]],
+    model: str = None,
+    max_tokens: int = 2500
+) -> Dict[str, str]:
+    """
+    Generate short 3-4 line summaries for each learning-path node.
+    """
+    import json
+
+    if not nodes:
+        return {}
+
+    chat_llm = get_llm(model=model, temperature=0.4, max_tokens=max_tokens)
+
+    nodes_text = "\n".join(
+        (
+            f"- id: {node.get('id', '')}\n"
+            f"  label: {node.get('label', '')}\n"
+            f"  module: {node.get('module', '')}\n"
+            f"  difficulty: {node.get('difficulty', '')}\n"
+            f"  type: {node.get('type', '')}"
+        )
+        for node in nodes
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", NODE_SUMMARY_SYSTEM_PROMPT),
+        ("human", """Generate summaries for these nodes:
+
+{nodes}
+""")
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+    response = chain.invoke({"nodes": nodes_text})
+
+    if not response or not response.strip():
+        return {}
+
+    response = response.strip()
+    if response.startswith("```json"):
+        response = response[7:]
+    if response.startswith("```"):
+        response = response[3:]
+    if response.endswith("```"):
+        response = response[:-3]
+    response = response.strip()
+
+    if not response.startswith("{"):
+        start_idx = response.find("{")
+        end_idx = response.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return {}
+
+    summaries: Dict[str, str] = {}
+    for item in parsed.get("summaries", []):
+        node_id = item.get("id")
+        summary = item.get("summary")
+        if node_id and isinstance(summary, str):
+            summaries[node_id] = summary.strip()
+
+    return summaries
+
+
+def generate_learning_path(
+    urls: List[str],
+    model: str = None,
+    max_tokens: int = 4000,
+    temperature: float = 0.5
+) -> Dict[str, Any]:
+    """
+    Generate a structured learning path from a list of URLs.
+    
+    Args:
+        urls: List of URLs from a sitemap
+        model: LLM model to use
+        max_tokens: Maximum response length
+        temperature: Response creativity (0-1)
+        
+    Returns:
+        Dictionary containing modules, nodes, edges, and learning_path
+    """
+    import json
+    
+    chat_llm = get_llm(model, temperature, max_tokens)
+    
+    # Format URLs as a list
+    urls_text = "\n".join(f"- {url}" for url in urls)
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", LEARNING_PATH_SYSTEM_PROMPT),
+        ("human", """CONTENT SOURCE (Sitemap URLs):
+{urls}
+
+Analyze these URLs and generate the learning roadmap JSON with modules, nodes, edges, and learning path.""")
+    ])
+    
+    chain = prompt | chat_llm | StrOutputParser()
+    
+    try:
+        print(f"[DEBUG] Sending {len(urls)} URLs to LLM for learning path generation...")
+        response = chain.invoke({"urls": urls_text})
+    except Exception as e:
+        print(f"[ERROR] LLM API call failed: {type(e).__name__}: {e}")
+        raise ValueError(f"LLM API call failed: {e}")
+    
+    # Debug: log the raw response
+    print(f"[DEBUG] Raw LLM response length: {len(response) if response else 0}")
+    print(f"[DEBUG] Raw LLM response (first 500 chars): {response[:500] if response else 'EMPTY'}")
+    
+    if not response or not response.strip():
+        raise ValueError("LLM returned an empty response")
+    
+    # Clean up response - extract JSON if wrapped in markdown code blocks
+    response = response.strip()
+    if response.startswith("```json"):
+        response = response[7:]
+    if response.startswith("```"):
+        response = response[3:]
+    if response.endswith("```"):
+        response = response[:-3]
+    response = response.strip()
+    
+    # Try to find JSON object in the response if it contains extra text
+    if not response.startswith("{"):
+        # Try to find the first { and last }
+        start_idx = response.find("{")
+        end_idx = response.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+            print(f"[DEBUG] Extracted JSON from response")
+    
+    print(f"[DEBUG] Cleaned response (first 500 chars): {response[:500] if response else 'EMPTY'}")
+    
+    # Parse and validate JSON
+    try:
+        result = json.loads(response)
+        
+        # Validate structure
+        if not isinstance(result.get("modules"), list):
+            result["modules"] = []
+        if not isinstance(result.get("nodes"), list):
+            result["nodes"] = []
+        if not isinstance(result.get("edges"), list):
+            result["edges"] = []
+        if not isinstance(result.get("learning_path"), list):
+            result["learning_path"] = []
+            
+        # Validate and normalize node properties
+        valid_difficulties = {"beginner", "intermediate", "advanced"}
+        valid_types = {"core_topic", "sub_topic"}
+        
+        for i, node in enumerate(result["nodes"]):
+            # Handle difficulty (new field) or level (old field)
+            difficulty = node.get("difficulty") or node.get("level")
+            if difficulty not in valid_difficulties:
+                difficulty = "intermediate"
+            node["difficulty"] = difficulty
+            
+            # Set level for backward compatibility
+            node["level"] = difficulty
+            
+            # Validate type
+            if node.get("type") not in valid_types:
+                node["type"] = "core_topic"
+                
+            # Ensure position exists
+            if not isinstance(node.get("position"), dict):
+                # Auto-calculate position based on difficulty
+                y_map = {"beginner": 0, "intermediate": 200, "advanced": 400}
+                node["position"] = {
+                    "x": (i % 4) * 200,
+                    "y": y_map.get(difficulty, 200)
+                }
+            else:
+                node["position"]["x"] = node["position"].get("x", 0)
+                node["position"]["y"] = node["position"].get("y", 0)
+
+        # Generate short summaries for each topic node
+        summary_map = generate_node_summaries(result["nodes"], model=model)
+        for node in result["nodes"]:
+            node["summary"] = summary_map.get(node.get("id")) or _fallback_node_summary(node)
+                
+        return result
+        
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse learning path response as JSON: {e}")
+
+
+def generate_learning_path_stream(
+    urls: List[str],
+    model: str = None,
+    max_tokens: int = 4000,
+    temperature: float = 0.5
+) -> Generator[str, None, None]:
+    """
+    Generate a streaming learning path response.
+    
+    Yields:
+        Response chunks as they are generated
+    """
+    chat_llm = get_llm(model, temperature, max_tokens, streaming=True)
+    
+    urls_text = "\n".join(f"- {url}" for url in urls)
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", LEARNING_PATH_SYSTEM_PROMPT),
+        ("human", """CONTENT SOURCE (Sitemap URLs):
+{urls}
+
+Analyze these URLs and generate the learning roadmap JSON with modules, nodes, edges, and learning path.""")
+    ])
+    
+    chain = prompt | chat_llm | StrOutputParser()
+    
+    for chunk in chain.stream({"urls": urls_text}):
+        yield chunk

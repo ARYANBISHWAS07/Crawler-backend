@@ -92,3 +92,60 @@ class ChatHistoryResponse(BaseModel):
     session_id: str
     collection_id: str
     messages: List[ChatMessage]
+
+
+class LearningLevel(str, Enum):
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+
+
+class NodeType(str, Enum):
+    CORE_TOPIC = "core_topic"
+    SUB_TOPIC = "sub_topic"
+
+
+class NodePosition(BaseModel):
+    """Position of a node in the graph for visualization."""
+    x: float = 0
+    y: float = 0
+
+
+class LearningModule(BaseModel):
+    """A module grouping related topics."""
+    id: str
+    title: str
+    description: Optional[str] = None
+
+
+class LearningNode(BaseModel):
+    """A node in the learning path graph representing a topic."""
+    id: str
+    label: str
+    summary: Optional[str] = None
+    module: Optional[str] = None
+    difficulty: LearningLevel = LearningLevel.BEGINNER
+    type: NodeType = NodeType.CORE_TOPIC
+    position: NodePosition = NodePosition()
+    # Deprecated field for backward compatibility
+    level: Optional[LearningLevel] = None
+
+
+class LearningEdge(BaseModel):
+    """An edge in the learning path graph representing a prerequisite relationship."""
+    source: str
+    target: str
+    type: str = "prerequisite"
+
+
+class LearningPathResponse(BaseModel):
+    """Response model for the generated learning path."""
+    modules: List[LearningModule] = []
+    nodes: List[LearningNode]
+    edges: List[LearningEdge]
+    learning_path: List[str]
+
+
+class GenerateLearningPathRequest(BaseModel):
+    """Request model for generating a learning path from URLs."""
+    urls: List[str]

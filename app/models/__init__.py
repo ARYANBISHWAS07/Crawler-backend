@@ -7,7 +7,9 @@ from .user import (
     Token,
     TokenData
 )
-
+from .chunk_question import (
+    ChunkQuestionnaire
+)
 from .collection import (
     MessageRole,
     ChatMessage,
@@ -19,6 +21,18 @@ from .collection import (
     CollectionInDB,
     SendMessageRequest,
     ChatHistoryResponse
+    
+)
+from .website_session import (
+    WebsiteChatMessage,
+    WebsiteSession,
+    WebsiteSessionSummary,
+    WebsiteSessionCreateRequest,
+    WebsiteScrapePageRequest,
+    WebsiteMessageRequest,
+)
+from .learning_node_summary import (
+    LearningNodeSummary,
 )
 
 __all__ = [
@@ -38,5 +52,13 @@ __all__ = [
     "CollectionWithChats",
     "CollectionInDB",
     "SendMessageRequest",
-    "ChatHistoryResponse"
+    "ChatHistoryResponse",
+    "ChunkQuestionnaire",
+    "WebsiteChatMessage",
+    "WebsiteSession",
+    "WebsiteSessionSummary",
+    "WebsiteSessionCreateRequest",
+    "WebsiteScrapePageRequest",
+    "WebsiteMessageRequest",
+    "LearningNodeSummary",
 ]

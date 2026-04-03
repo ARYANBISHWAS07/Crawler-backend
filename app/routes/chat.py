@@ -3,17 +3,43 @@ Chat routes for collection-based conversations.
 Uses Socket.IO for real-time messaging and HTTP endpoints for REST API.
 """
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import asyncio
+import re
 
 from app import collection_store
 from app import vector_store
 from app import llm_service
+from app.extensions import scrape_single_page
+from app.models import (
+    WebsiteMessageRequest,
+    WebsiteSessionCreateRequest,
+    WebsiteSessionSummary,
+)
+from app.routes.scrape import (
+    append_temp_website_message,
+    create_temp_website_session,
+    delete_temp_website_session,
+    extract_scraped_text,
+    get_temp_website_session,
+    list_temp_website_sessions,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
+WEBSITE_CONTEXT_LIMIT = 12000
+CHAT_HISTORY_LIMIT = 8
+FOLLOW_UP_PATTERNS = [
+    r"\bmore info\b",
+    r"\btell me more\b",
+    r"\bmore details\b",
+    r"\belaborate\b",
+    r"\bcontinue\b",
+    r"\bexpand\b",
+    r"\bcan you explain more\b",
+]
 
 class CreateSessionRequest(BaseModel):
     collection_id: str
@@ -29,7 +55,7 @@ class MessageResponse(BaseModel):
     id: str
     role: str
     content: str
-    sources: List[dict] = []
+    sources: List[dict] = Field(default_factory=list)
     created_at: str
 
 
@@ -37,12 +63,45 @@ class SessionResponse(BaseModel):
     id: str
     collection_id: str
     title: Optional[str]
-    messages: List[dict]
+    messages: List[dict] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
 
-# Session Management Endpoints
+def _is_follow_up_message(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    return any(re.search(pattern, text) for pattern in FOLLOW_UP_PATTERNS)
+
+
+def _infer_topic_from_session(messages: List[dict]) -> Optional[str]:
+    """
+    Infer the active topic from the latest non-follow-up user message.
+    """
+    for msg in reversed(messages or []):
+        if msg.get("role") != "user":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if _is_follow_up_message(content):
+            continue
+        return content
+    return None
+
+
+def _resolve_retrieval_query(message: str, session_messages: List[dict]) -> str:
+    """
+    Resolve ambiguous follow-ups to the previous topic for vector retrieval.
+    """
+    if not _is_follow_up_message(message):
+        return message
+    topic = _infer_topic_from_session(session_messages)
+    if not topic:
+        return message
+    return f"{message.strip()} about: {topic}"
+
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session(req: CreateSessionRequest):
@@ -110,8 +169,6 @@ async def delete_session(collection_id: str, session_id: str):
     return {"message": "Session deleted", "session_id": session_id}
 
 
-# Message Endpoints (REST API alternative to Socket.IO)
-
 @router.post("/message/{collection_id}/{session_id}")
 async def send_message(
     collection_id: str,
@@ -122,15 +179,13 @@ async def send_message(
     Send a message and get AI response (REST API).
     For real-time updates, use Socket.IO instead.
     """
-    # Verify collection
     collection = await collection_store.get_collection_by_id(collection_id)
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found"
         )
-    
-    # Verify session
+
     session = await collection_store.get_chat_session(collection_id, session_id)
     if not session:
         raise HTTPException(
@@ -139,8 +194,7 @@ async def send_message(
         )
     
     collection_name = collection.get('name')
-    
-    # Create and save user message
+    prior_messages = session.get("messages", [])
     user_message_id = str(uuid.uuid4())
     user_message = {
         "id": user_message_id,
@@ -152,34 +206,54 @@ async def send_message(
     await collection_store.add_message_to_session(collection_id, session_id, user_message)
     
     try:
-        # Get context from vector store
-        context = vector_store.get_context_for_question(
-            query=req.message,
-            top_k=req.top_k,
-            collection_name=collection_name
+        retrieval_query = _resolve_retrieval_query(req.message, prior_messages)
+        retrieval_top_k = max(req.top_k, 6)
+
+        context, sources = await asyncio.to_thread(
+            vector_store.get_context_and_sources,
+            retrieval_query,
+            retrieval_top_k,
+            collection_name,
+            0.4,
+        )
+        if not sources:
+            # Retry without threshold so we can still answer when embeddings are sparse.
+            context, sources = await asyncio.to_thread(
+                vector_store.get_context_and_sources,
+                retrieval_query,
+                retrieval_top_k,
+                collection_name,
+            )
+        history_for_llm = [
+            {"role": m.get("role"), "content": m.get("content", "")}
+            for m in prior_messages[-CHAT_HISTORY_LIMIT:]
+            if m.get("role") in {"user", "assistant"} and m.get("content")
+        ]
+        history_for_llm.append({"role": "user", "content": req.message})
+
+        answer = await asyncio.to_thread(
+            llm_service.chat_with_history,
+            messages=history_for_llm,
+            context=context,
+            system_prompt=(
+                f"{llm_service.DEFAULT_SYSTEM_PROMPT}\n\n"
+                "Use conversation history to resolve references like 'more info' or 'that'. "
+                "When asked for more information, add new details from context and avoid repeating prior text."
+            ),
         )
         
-        # Get source documents
-        sources = vector_store.search(
-            query=req.message,
-            top_k=req.top_k,
-            collection_name=collection_name
-        )
-        
-        # Generate AI response
-        answer = llm_service.generate_chat_response(
-            question=req.message,
-            context=context
-        )
-        
-        # Create and save assistant message
+
         assistant_message_id = str(uuid.uuid4())
         assistant_message = {
             "id": assistant_message_id,
             "role": "assistant",
             "content": answer,
             "sources": [
-                {"url": s["url"], "title": s["title"], "similarity": s["similarity"]}
+                {
+                    "url": s.get("url", ""),
+                    "title": s.get("title", ""),
+                    "similarity": s.get("similarity", 0.0),
+                }
                 for s in sources
             ],
             "created_at": datetime.utcnow().isoformat()
@@ -230,4 +304,169 @@ async def get_chat_history(collection_id: str, session_id: str):
         "session_id": session_id,
         "collection_id": collection_id,
         "messages": session.get("messages", [])
+    }
+
+
+
+def _website_session_summary(session: dict) -> dict:
+    summary = WebsiteSessionSummary(
+        id=session["id"],
+        website_session_name=session["website_session_name"],
+        user_id=session.get("user_id"),
+        url=session["url"],
+        domain=session.get("domain") or "",
+        context_length=len(session.get("context", "")),
+        message_count=len(session.get("messages", [])),
+        created_at=session["created_at"],
+        updated_at=session["updated_at"],
+    )
+    return summary.model_dump()
+
+
+@router.post("/website/sessions", status_code=status.HTTP_201_CREATED)
+async def create_website_session(req: WebsiteSessionCreateRequest):
+    """Create a temporary website chat session by scraping a single URL."""
+    try:
+        raw = await scrape_single_page(str(req.url))
+        context = extract_scraped_text(raw).strip()
+        if not context:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Could not extract readable context from the URL.",
+            )
+        session = create_temp_website_session(
+            str(req.url),
+            context,
+            website_session_name=req.website_session_name,
+            user_id=req.user_id,
+        )
+        return {"session": _website_session_summary(session)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create website session: {str(e)}",
+        )
+
+
+@router.get("/website/sessions")
+async def get_website_sessions():
+    sessions = list_temp_website_sessions()
+    return {"sessions": [_website_session_summary(s) for s in sessions]}
+
+
+@router.get("/website/session/{session_id}")
+async def get_website_session(session_id: str):
+    session = get_temp_website_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Website session not found",
+        )
+    return {
+        "session": _website_session_summary(session),
+        "messages": session.get("messages", []),
+    }
+
+
+@router.delete("/website/session/{session_id}")
+async def delete_website_session(session_id: str):
+    deleted = delete_temp_website_session(session_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Website session not found",
+        )
+    return {"message": "Website session deleted", "session_id": session_id}
+
+
+@router.post("/website/message/{session_id}")
+async def send_website_message(session_id: str, req: WebsiteMessageRequest):
+    """
+    Send a chat message against temporary context stored for a scraped website session.
+    """
+    session = get_temp_website_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Website session not found",
+        )
+
+    user_message = {
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "content": req.message,
+        "sources": [],
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    append_temp_website_message(session_id, user_message)
+
+    try:
+        context = (session.get("context", "") or "")[:WEBSITE_CONTEXT_LIMIT]
+        answer = await asyncio.to_thread(
+            llm_service.generate_chat_response,
+            question=req.message,
+            context=context,
+        )
+
+        assistant_message = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": answer,
+            "sources": [
+                {
+                    "url": session.get("url", ""),
+                    "title": session.get("website_session_name", "Website"),
+                    "similarity": 1.0,
+                }
+            ],
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        append_temp_website_message(session_id, assistant_message)
+
+        try:
+            from app.socketio_manager import sio
+
+            room = f"website_chat_{session_id}"
+            await sio.emit(
+                "new_message",
+                {
+                    "session_id": session_id,
+                    "message": assistant_message,
+                },
+                room=room,
+            )
+        except Exception:
+            pass
+
+        return {
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+        }
+    except ValueError as e:
+        return {
+            "user_message": user_message,
+            "assistant_message": None,
+            "error": str(e),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate response: {str(e)}",
+        )
+
+
+@router.get("/website/history/{session_id}")
+async def get_website_chat_history(session_id: str):
+    session = get_temp_website_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Website session not found",
+        )
+    return {
+        "session_id": session_id,
+        "url": session.get("url"),
+        "messages": session.get("messages", []),
     }

@@ -5,11 +5,8 @@ Fixed connection handling with proper ASGI integration.
 """
 import socketio
 from typing import Optional, Dict
-import json
 import asyncio
-import threading
 
-# Create Socket.IO server with proper CORS and transport settings
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins='*',
@@ -20,7 +17,6 @@ sio = socketio.AsyncServer(
     transports=['websocket', 'polling']
 )
 
-# Create ASGI app for Socket.IO - mount at root path
 socket_app = socketio.ASGIApp(
     sio,
     socketio_path='socket.io'
@@ -43,13 +39,10 @@ def get_main_loop() -> Optional[asyncio.AbstractEventLoop]:
     """Get the main event loop reference."""
     return _main_loop
 
-
-# Connection handlers
 @sio.event
 async def connect(sid, environ, auth=None):
     """Handle client connection."""
     global _main_loop
-    # Capture the main event loop on first connection
     if _main_loop is None:
         _main_loop = asyncio.get_event_loop()
     print(f"🔌 Client connected: {sid}")
@@ -60,21 +53,30 @@ async def connect(sid, environ, auth=None):
 async def disconnect(sid):
     """Handle client disconnection."""
     print(f"🔌 Client disconnected: {sid}")
-    # Remove from all rooms
     for room, clients in list(connected_clients.items()):
         clients.discard(sid)
         if not clients:
             del connected_clients[room]
 
 
-# Ping handler to keep connection alive
+def _track_join(room: str, sid: str) -> None:
+    clients = connected_clients.setdefault(room, set())
+    clients.add(sid)
+
+
+def _track_leave(room: str, sid: str) -> None:
+    clients = connected_clients.get(room)
+    if not clients:
+        return
+    clients.discard(sid)
+    if not clients:
+        connected_clients.pop(room, None)
+
 @sio.event
 async def ping(sid):
     """Handle ping from client."""
     await sio.emit('pong', {'timestamp': asyncio.get_event_loop().time()}, to=sid)
 
-
-# Room management for job/collection updates
 @sio.event
 async def join_job(sid, data):
     """Join a room to receive updates for a specific job."""
@@ -82,9 +84,7 @@ async def join_job(sid, data):
     if job_id:
         room = f"job_{job_id}"
         await sio.enter_room(sid, room)
-        if room not in connected_clients:
-            connected_clients[room] = set()
-        connected_clients[room].add(sid)
+        _track_join(room, sid)
         print(f"Client {sid} joined job room: {job_id}")
         await sio.emit('joined_job', {'job_id': job_id, 'room': room}, to=sid)
 
@@ -96,8 +96,7 @@ async def leave_job(sid, data):
     if job_id:
         room = f"job_{job_id}"
         await sio.leave_room(sid, room)
-        if room in connected_clients:
-            connected_clients[room].discard(sid)
+        _track_leave(room, sid)
         print(f"Client {sid} left job room: {job_id}")
 
 
@@ -108,9 +107,7 @@ async def join_collection(sid, data):
     if collection_id:
         room = f"collection_{collection_id}"
         await sio.enter_room(sid, room)
-        if room not in connected_clients:
-            connected_clients[room] = set()
-        connected_clients[room].add(sid)
+        _track_join(room, sid)
         print(f"Client {sid} joined collection room: {collection_id}")
         await sio.emit('joined_collection', {'collection_id': collection_id, 'room': room}, to=sid)
 
@@ -122,12 +119,9 @@ async def leave_collection(sid, data):
     if collection_id:
         room = f"collection_{collection_id}"
         await sio.leave_room(sid, room)
-        if room in connected_clients:
-            connected_clients[room].discard(sid)
+        _track_leave(room, sid)
         print(f"Client {sid} left collection room: {collection_id}")
 
-
-# Chat room management
 @sio.event
 async def join_chat(sid, data):
     """Join a chat room for a collection."""
@@ -136,9 +130,7 @@ async def join_chat(sid, data):
     if collection_id:
         room = f"chat_{collection_id}_{session_id}" if session_id else f"chat_{collection_id}"
         await sio.enter_room(sid, room)
-        if room not in connected_clients:
-            connected_clients[room] = set()
-        connected_clients[room].add(sid)
+        _track_join(room, sid)
         print(f"Client {sid} joined chat room: {room}")
         await sio.emit('joined_chat', {
             'collection_id': collection_id,
@@ -155,8 +147,7 @@ async def leave_chat(sid, data):
     if collection_id:
         room = f"chat_{collection_id}_{session_id}" if session_id else f"chat_{collection_id}"
         await sio.leave_room(sid, room)
-        if room in connected_clients:
-            connected_clients[room].discard(sid)
+        _track_leave(room, sid)
         print(f"Client {sid} left chat room: {room}")
 
 
@@ -204,7 +195,6 @@ async def send_message(sid, data):
         await collection_store.create_chat_session(collection_id, session_data)
         await sio.emit('session_created', {'session_id': session_id}, to=sid)
     
-    # Create user message
     user_message_id = str(uuid.uuid4())
     user_message = {
         "id": user_message_id,
@@ -228,24 +218,19 @@ async def send_message(sid, data):
     await sio.emit('typing', {'session_id': session_id}, room=room)
     
     try:
-        # Get context from vector store
-        context = vector_store.get_context_for_question(
-            query=message,
-            top_k=top_k,
-            collection_name=collection_name
+        # Get context and sources from vector store without blocking the event loop
+        context, sources = await asyncio.to_thread(
+            vector_store.get_context_and_sources,
+            message,
+            top_k,
+            collection_name,
         )
-        
-        # Get source documents
-        sources = vector_store.search(
-            query=message,
-            top_k=top_k,
-            collection_name=collection_name
-        )
-        
-        # Generate AI response using LangChain
-        answer = llm_service.generate_chat_response(
+
+        # Generate AI response without blocking the event loop
+        answer = await asyncio.to_thread(
+            llm_service.generate_chat_response,
             question=message,
-            context=context
+            context=context,
         )
         
         # Create assistant message
