@@ -40,12 +40,24 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_DEFAULT_COLLECTION = os.getenv("QDRANT_COLLECTION", "scraped_data")
 QDRANT_TIMEOUT_SECONDS = float(os.getenv("QDRANT_TIMEOUT_SECONDS", "60"))
 
-# Connect to Qdrant
-qdrant_client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY,
-    timeout=QDRANT_TIMEOUT_SECONDS,
-)
+# Lazy initialization of Qdrant client to defer connection until needed
+_qdrant_client = None
+
+def get_qdrant_client():
+    """Get or initialize the Qdrant client (lazy initialization)."""
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY,
+            timeout=QDRANT_TIMEOUT_SECONDS,
+            check_compatibility=False,
+        )
+    return _qdrant_client
+
+# Alias for backward compatibility
+def qdrant_client():
+    return get_qdrant_client()
 
 # LangChain embeddings using HuggingFace
 embeddings_model = HuggingFaceEmbeddings(
@@ -86,10 +98,10 @@ def _safe_collection_name(collection_name: Optional[str]) -> str:
 def _collection_exists_in_qdrant(collection_name: str) -> bool:
     """Version-safe check for collection existence."""
     try:
-        return qdrant_client.collection_exists(collection_name=collection_name)
+        return get_qdrant_client().collection_exists(collection_name=collection_name)
     except AttributeError:
         try:
-            qdrant_client.get_collection(collection_name=collection_name)
+            get_qdrant_client().get_collection(collection_name=collection_name)
             return True
         except Exception:
             return False
@@ -100,7 +112,7 @@ def _collection_exists_in_qdrant(collection_name: str) -> bool:
 def _ensure_collection(collection_name: Optional[str] = None) -> str:
     name = _safe_collection_name(collection_name)
     if not _collection_exists_in_qdrant(name):
-        qdrant_client.create_collection(
+        get_qdrant_client().create_collection(
             collection_name=name,
             vectors_config=VectorParams(
                 size=EMBEDDING_DIMENSION,
@@ -241,7 +253,7 @@ def store_pages(
                 )
             )
 
-        qdrant_client.upsert(
+        get_qdrant_client().upsert(
             collection_name=qdrant_collection,
             points=points,
             wait=True,
@@ -269,9 +281,9 @@ def search(
     print(f"Searching for: {query} (top_k={top_k})")
     query_embedding = embeddings_model.embed_query(query)
 
-    if hasattr(qdrant_client, "search"):
+    if hasattr(get_qdrant_client(), "search"):
         # Older qdrant-client API.
-        search_results = qdrant_client.search(
+        search_results = get_qdrant_client().search(
             collection_name=qdrant_collection,
             query_vector=query_embedding,
             limit=top_k,
@@ -280,7 +292,7 @@ def search(
         )
     else:
         # Newer qdrant-client API (query_points).
-        query_response = qdrant_client.query_points(
+        query_response = get_qdrant_client().query_points(
             collection_name=qdrant_collection,
             query=query_embedding,
             limit=top_k,
@@ -356,9 +368,9 @@ def clear_collection(collection_name: str = None):
     name = _safe_collection_name(collection_name)
 
     if _collection_exists_in_qdrant(name):
-        qdrant_client.delete_collection(collection_name=name)
+        get_qdrant_client().delete_collection(collection_name=name)
 
-    qdrant_client.create_collection(
+    get_qdrant_client().create_collection(
         collection_name=name,
         vectors_config=VectorParams(
             size=EMBEDDING_DIMENSION,
@@ -370,7 +382,7 @@ def clear_collection(collection_name: str = None):
 def get_collection_stats(collection_name: str = None) -> Dict[str, Any]:
     """Get statistics about the collection."""
     name = _ensure_collection(collection_name)
-    count_result = qdrant_client.count(collection_name=name, exact=True)
+    count_result = get_qdrant_client().count(collection_name=name, exact=True)
     return {
         "name": collection_name or QDRANT_DEFAULT_COLLECTION,
         "count": count_result.count,
@@ -381,7 +393,7 @@ def has_embeddings(collection_name: str = None) -> bool:
     """Check if a collection has any embeddings stored."""
     try:
         name = _ensure_collection(collection_name)
-        count_result = qdrant_client.count(collection_name=name, exact=True)
+        count_result = get_qdrant_client().count(collection_name=name, exact=True)
         return count_result.count > 0
     except Exception:
         return False
@@ -396,7 +408,7 @@ def collection_exists(collection_name: str) -> bool:
         name = _safe_collection_name(collection_name)
         if not _collection_exists_in_qdrant(name):
             return False
-        count_result = qdrant_client.count(collection_name=name, exact=True)
+        count_result = get_qdrant_client().count(collection_name=name, exact=True)
         return count_result.count > 0
     except Exception:
         return False
@@ -407,7 +419,7 @@ def get_collection_urls(collection_name: str = None, limit: int = 100) -> List[s
     name = _ensure_collection(collection_name)
 
     try:
-        points, _ = qdrant_client.scroll(
+        points, _ = get_qdrant_client().scroll(
             collection_name=name,
             limit=limit,
             with_payload=["url"],
@@ -441,7 +453,7 @@ def url_is_embedded(url: str, collection_name: str = None) -> bool:
         )
 
         try:
-            points, _ = qdrant_client.scroll(
+            points, _ = get_qdrant_client().scroll(
                 collection_name=name,
                 scroll_filter=filter_query,
                 limit=1,
@@ -450,7 +462,7 @@ def url_is_embedded(url: str, collection_name: str = None) -> bool:
             )
         except TypeError:
             # Compatibility for older qdrant-client versions.
-            points, _ = qdrant_client.scroll(
+            points, _ = get_qdrant_client().scroll(
                 collection_name=name,
                 query_filter=filter_query,
                 limit=1,
