@@ -17,9 +17,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz >/dev/null 2>&1 || exit 1"]
       interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
 
   backend:
     build:
@@ -27,11 +27,6 @@ services:
       dockerfile: Dockerfile
     container_name: crawler-backend
     restart: unless-stopped
-    depends_on:
-      qdrant:
-        condition: service_healthy
-      redis:
-        condition: service_started
     env_file:
       - .env
     environment:
