@@ -22,11 +22,11 @@ services:
       start_period: 30s
 
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: aryanbishwas07/crawler-backend:latest
     container_name: crawler-backend
     restart: unless-stopped
+    depends_on:
+      - redis
     env_file:
       - .env
     environment:
