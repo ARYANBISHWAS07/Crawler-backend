@@ -1,24 +1,26 @@
 from datetime import datetime
 import uuid
+import os
+from pymongo import MongoClient
 
 def save_chunk_questionnaire(
     collection_id: str,
-    # chunk_content: str,
-    questionnaire: str,
+    questionnaire: dict,
     metadata: dict
 ) -> bool:
-    from app.database import get_collection
-
-    chunk_collection = get_collection("chunk_question")
+    mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    database_name = os.getenv("DATABASE_NAME", "scrapper_db")
+    sync_client = MongoClient(mongodb_url)
+    chunk_collection = sync_client[database_name]["chunk_question"]
 
     document = {
         "id": str(uuid.uuid4()),
         "collection_id": collection_id,
-        # "chunk_content": chunk_content,
-        "questionnaire": questionnaire,
+        "questionnaire": questionnaire.get("questions", []) if isinstance(questionnaire, dict) else [],
         "metadata": metadata,
         "created_at": datetime.utcnow()
     }
 
     chunk_collection.insert_one(document)
+    sync_client.close()
     return True

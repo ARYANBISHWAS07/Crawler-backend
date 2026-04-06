@@ -237,6 +237,64 @@ def summarize_content(
     return chain.invoke({"content": content})
 
 
+def generate_quiz_improvement_feedback(
+    score: int,
+    total_questions: int,
+    wrong_answers: List[Dict[str, Any]],
+    model: str = None,
+    max_tokens: int = 1000,
+) -> str:
+    """
+    Generate actionable study suggestions based on wrong quiz answers.
+    """
+    if not wrong_answers:
+        return (
+            "Great work. You got every question correct. "
+            "To keep momentum, revise key concepts once and try a harder quiz next."
+        )
+
+    chat_llm = get_llm(model=model, temperature=0.5, max_tokens=max_tokens)
+
+    wrong_text_parts = []
+    for idx, item in enumerate(wrong_answers, 1):
+        wrong_text_parts.append(
+            f"{idx}. Question: {item.get('question', '')}\n"
+            f"   Selected: {item.get('selected_option', '')}\n"
+            f"   Correct: {item.get('correct_option', '')}\n"
+            f"   Explanation: {item.get('explanation', '')}"
+        )
+    wrong_text = "\n".join(wrong_text_parts)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are an expert learning coach. "
+         "Given a student's quiz performance, provide practical, encouraging remediation steps."
+        ),
+        ("human",
+         """Quiz Score:
+- Score: {score}/{total}
+
+Wrong Answers:
+{wrong_answers}
+
+Instructions:
+- Identify 2-4 weak concept areas.
+- Give a concise improvement plan for each area.
+- Include a 3-day revision strategy.
+- Suggest 3 focused practice prompts the student can try.
+- Keep tone encouraging and clear.
+"""
+        ),
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+    return chain.invoke({
+        "score": score,
+        "total": total_questions,
+        "wrong_answers": wrong_text,
+    })
+
+
 def generate_questionnaire_from_summary(
     summary: str,
     model: str = None,
@@ -287,30 +345,38 @@ def generate_questionnaire_from_chunk(
     chunk: str,
     model: str = None,
     max_tokens: int = 600
-) -> str:
+) -> Dict[str, Any]:
     """
-    Generate a questionnaire for a single chunk of crawled data.
+    Generate MCQ questionnaire for a single chunk of crawled data.
     """
+    import json
 
     chat_llm = get_llm(model=model, temperature=0.6, max_tokens=max_tokens)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "You are an expert instructional designer. "
-         "Create a focused questionnaire strictly based on the provided chunk of content."
+         "Create a focused MCQ questionnaire strictly based on the provided chunk of content."
         ),
         ("human",
-        """Based on the following content chunk, generate exactly 5 high-quality questions.
+        """Based on the following content chunk, generate exactly 5 high-quality MCQ questions.
 
 Return the output strictly in this JSON format:
 
 {{
   "questions": [
-    {{"id": 1, "question": "First question here"}},
-    {{"id": 2, "question": "Second question here"}},
-    {{"id": 3, "question": "Third question here"}},
-    {{"id": 4, "question": "Fourth question here"}},
-    {{"id": 5, "question": "Fifth question here"}}
+    {{
+      "id": 1,
+      "question": "Question text",
+      "options": {{
+        "A": "Option A",
+        "B": "Option B",
+        "C": "Option C",
+        "D": "Option D"
+      }},
+      "correct_option": "A",
+      "explanation": "Short explanation for why the answer is correct"
+    }}
   ]
 }}
 
@@ -320,7 +386,8 @@ Content Chunk:
 Rules:
 - Questions must be strictly based on this chunk only
 - Do not assume missing information
-- Do not provide answers
+- Each question must have 4 options: A, B, C, D
+- Provide exactly one correct option for each question
 - Output must be valid JSON only
 """
         )
@@ -328,7 +395,54 @@ Rules:
 
     chain = prompt | chat_llm | StrOutputParser()
 
-    return chain.invoke({"chunk": chunk})
+    response = chain.invoke({"chunk": chunk})
+    if not response or not response.strip():
+        return {"questions": []}
+
+    response = response.strip()
+    if response.startswith("```json"):
+        response = response[7:]
+    if response.startswith("```"):
+        response = response[3:]
+    if response.endswith("```"):
+        response = response[:-3]
+    response = response.strip()
+
+    if not response.startswith("{"):
+        start_idx = response.find("{")
+        end_idx = response.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return {"questions": []}
+
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("questions"), list):
+        return {"questions": []}
+
+    normalized_questions = []
+    for i, q in enumerate(parsed.get("questions", []), start=1):
+        if not isinstance(q, dict):
+            continue
+        options = q.get("options") or {}
+        if not isinstance(options, dict):
+            options = {}
+        normalized_questions.append({
+            "id": q.get("id", i),
+            "question": q.get("question", "").strip(),
+            "options": {
+                "A": str(options.get("A", "")).strip(),
+                "B": str(options.get("B", "")).strip(),
+                "C": str(options.get("C", "")).strip(),
+                "D": str(options.get("D", "")).strip(),
+            },
+            "correct_option": str(q.get("correct_option", "")).strip(),
+            "explanation": str(q.get("explanation", "")).strip(),
+        })
+
+    return {"questions": normalized_questions}
 
 
 # Learning Path Generation Prompt
