@@ -14,6 +14,12 @@ class QuizStartRequest(BaseModel):
     collection_id: str
     question_count: int = Field(default=5, ge=5, le=10)
     user_id: Optional[str] = None
+    scope_mode: str = Field(default="broad", pattern="^(focused|broad)$")
+    focus_query: Optional[str] = None
+    min_semantic_score: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_questions_per_url: int = Field(default=2, ge=1, le=10)
+    min_distinct_urls: int = Field(default=2, ge=1, le=20)
+    use_llm_classifier: bool = False
 
 
 class QuizStartResponse(BaseModel):

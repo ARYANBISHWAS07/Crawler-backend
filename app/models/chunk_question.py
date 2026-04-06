@@ -24,4 +24,5 @@ class ChunkQuestionnaire(BaseModel):
     collection_id: str
     questionnaire: List[MCQQuestion] = Field(default_factory=list)
     metadata: Dict
+    chunk_excerpt: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -4,6 +4,7 @@ Handles chat responses, streaming, and text processing.
 """
 from typing import List, Dict, Any, Optional, Generator
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -247,6 +248,16 @@ def generate_quiz_improvement_feedback(
     """
     Generate actionable study suggestions based on wrong quiz answers.
     """
+    def _to_plain_text(text: str) -> str:
+        normalized = (text or "").strip()
+        # Remove markdown emphasis markers.
+        normalized = normalized.replace("**", "").replace("__", "")
+        # Convert markdown headers to plain lines.
+        normalized = re.sub(r"^\s{0,3}#{1,6}\s*", "", normalized, flags=re.MULTILINE)
+        # Normalize markdown bullets to plain dashes.
+        normalized = re.sub(r"^\s*[-*]\s+", "- ", normalized, flags=re.MULTILINE)
+        return normalized.strip()
+
     if not wrong_answers:
         return (
             "Great work. You got every question correct. "
@@ -268,11 +279,12 @@ def generate_quiz_improvement_feedback(
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "You are an expert learning coach. "
-         "Given a student's quiz performance, provide practical, encouraging remediation steps."
+         "Given a student's quiz performance, provide practical, encouraging remediation steps. "
+         "Output must be plain text only. Do not use markdown symbols like **, *, #, or code fences."
         ),
         ("human",
          """Quiz Score:
-- Score: {score}/{total}
+Score: {score}/{total}
 
 Wrong Answers:
 {wrong_answers}
@@ -283,16 +295,110 @@ Instructions:
 - Include a 3-day revision strategy.
 - Suggest 3 focused practice prompts the student can try.
 - Keep tone encouraging and clear.
+- Use plain text only (no markdown).
 """
         ),
     ])
 
     chain = prompt | chat_llm | StrOutputParser()
-    return chain.invoke({
+    raw_feedback = chain.invoke({
         "score": score,
         "total": total_questions,
         "wrong_answers": wrong_text,
     })
+    return _to_plain_text(raw_feedback)
+
+
+def classify_quiz_questions(
+    questions: List[Dict[str, Any]],
+    focus_query: str,
+    model: str = None,
+    max_tokens: int = 1500,
+) -> Dict[str, str]:
+    """
+    Classify questions into core_topic or site_meta_noise relative to a focus query.
+    Returns mapping: question_id -> label
+    """
+    import json
+
+    if not questions:
+        return {}
+
+    chat_llm = get_llm(model=model, temperature=0.2, max_tokens=max_tokens)
+
+    questions_blob = "\n".join(
+        f"- id: {q.get('id', '')}\n"
+        f"  question: {q.get('question', '')}\n"
+        f"  source_title: {(q.get('metadata', {}) or {}).get('title', '')}\n"
+        f"  source_url: {(q.get('metadata', {}) or {}).get('url', '')}"
+        for q in questions
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a strict quiz quality classifier. "
+         "Classify each question as either core_topic or site_meta_noise "
+         "relative to the focus query."
+        ),
+        ("human",
+         """Focus Query:
+{focus_query}
+
+Questions:
+{questions_blob}
+
+Return ONLY valid JSON:
+{{
+  "labels": [
+    {{"id": "question-id", "label": "core_topic"}},
+    {{"id": "question-id", "label": "site_meta_noise"}}
+  ]
+}}
+
+Rules:
+- core_topic: directly tests the main subject.
+- site_meta_noise: tests navigation, policies, language lists, boilerplate, or unrelated site metadata.
+- Label every question id exactly once.
+"""
+        ),
+    ])
+
+    chain = prompt | chat_llm | StrOutputParser()
+    response = chain.invoke({
+        "focus_query": focus_query,
+        "questions_blob": questions_blob,
+    })
+
+    if not response or not response.strip():
+        return {}
+
+    response = response.strip()
+    if response.startswith("```json"):
+        response = response[7:]
+    if response.startswith("```"):
+        response = response[3:]
+    if response.endswith("```"):
+        response = response[:-3]
+    response = response.strip()
+
+    if not response.startswith("{"):
+        start_idx = response.find("{")
+        end_idx = response.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            response = response[start_idx:end_idx + 1]
+
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return {}
+
+    labels: Dict[str, str] = {}
+    for item in parsed.get("labels", []):
+        question_id = str(item.get("id", "")).strip()
+        label = str(item.get("label", "")).strip().lower()
+        if question_id and label in {"core_topic", "site_meta_noise"}:
+            labels[question_id] = label
+    return labels
 
 
 def generate_questionnaire_from_summary(

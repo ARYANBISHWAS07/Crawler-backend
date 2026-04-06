@@ -50,23 +50,52 @@ async def start_quiz(req: QuizStartRequest):
             detail="Collection not found",
         )
 
+    if req.scope_mode == "focused" and not (req.focus_query or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="focus_query is required when scope_mode is 'focused'.",
+        )
+
     question_bank = await quiz_store.get_collection_mcq_bank(req.collection_id)
-    if len(question_bank) < req.question_count:
+    filtered_bank = quiz_store.filter_questions_by_scope(
+        question_bank=question_bank,
+        scope_mode=req.scope_mode,
+        focus_query=req.focus_query,
+        collection_topic=collection.get("name") or collection.get("url"),
+        min_semantic_score=req.min_semantic_score,
+        max_questions_per_url=req.max_questions_per_url,
+        min_distinct_urls=req.min_distinct_urls,
+    )
+
+    if req.scope_mode == "focused" and req.use_llm_classifier and req.focus_query:
+        labels = llm_service.classify_quiz_questions(filtered_bank, req.focus_query)
+        filtered_bank = quiz_store.filter_core_topic_with_labels(filtered_bank, labels)
+
+    if len(filtered_bank) < req.question_count:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Not enough MCQ questions in this collection. "
-                f"Available: {len(question_bank)}, requested: {req.question_count}"
+                "Not enough filtered MCQ questions for this quiz setup. "
+                f"Available after filtering: {len(filtered_bank)}, requested: {req.question_count}. "
+                "Try lowering min_semantic_score, increasing max_questions_per_url, or using broad scope."
             ),
         )
 
-    selected_questions = random.sample(question_bank, req.question_count)
+    selected_questions = random.sample(filtered_bank, req.question_count)
     quiz_session_id = str(uuid.uuid4())
     created_at = datetime.utcnow()
     quiz_document = {
         "id": quiz_session_id,
         "collection_id": req.collection_id,
         "user_id": req.user_id,
+        "scope_mode": req.scope_mode,
+        "focus_query": req.focus_query,
+        "filters": {
+            "min_semantic_score": req.min_semantic_score,
+            "max_questions_per_url": req.max_questions_per_url,
+            "min_distinct_urls": req.min_distinct_urls,
+            "use_llm_classifier": req.use_llm_classifier,
+        },
         "status": "in_progress",
         "total_questions": req.question_count,
         "score": 0,

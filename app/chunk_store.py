@@ -6,7 +6,8 @@ from pymongo import MongoClient
 def save_chunk_questionnaire(
     collection_id: str,
     questionnaire: dict,
-    metadata: dict
+    metadata: dict,
+    chunk_text: str = "",
 ) -> bool:
     mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     database_name = os.getenv("DATABASE_NAME", "scrapper_db")
@@ -18,6 +19,7 @@ def save_chunk_questionnaire(
         "collection_id": collection_id,
         "questionnaire": questionnaire.get("questions", []) if isinstance(questionnaire, dict) else [],
         "metadata": metadata,
+        "chunk_excerpt": (chunk_text or "").strip()[:1200],
         "created_at": datetime.utcnow()
     }
 
