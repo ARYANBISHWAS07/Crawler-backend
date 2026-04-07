@@ -22,7 +22,9 @@ services:
       start_period: 30s
 
   backend:
-    image: aryanbishwas07/crawler-backend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: crawler-backend
     restart: unless-stopped
     depends_on:
