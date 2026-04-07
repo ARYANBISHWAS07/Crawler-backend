@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, status, Depends
+import asyncio
 from datetime import datetime
-from bson import ObjectId
 from typing import List
+import uuid
 
 from app.models import UserCreate, UserLogin, UserResponse, UserUpdate, Token
-from app.database import get_collection
+from app.database import delete_item, get_by_id, get_scan_attr, put_item, scan_table, update_item
 from app import collection_store
 from app.auth import (
     get_password_hash,
@@ -16,68 +17,70 @@ from app.auth import (
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+async def _find_user_by_email(email: str):
+    users = await asyncio.to_thread(scan_table, "users", get_scan_attr("email").eq(email), 1)
+    return users[0] if users else None
+
+
+async def _find_user_by_username(username: str):
+    users = await asyncio.to_thread(scan_table, "users", get_scan_attr("username").eq(username), 1)
+    return users[0] if users else None
+
+
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserCreate):
     """Register a new user."""
-    users_collection = get_collection("users")
-    
-    # Check if email already exists
-    existing_user = await users_collection.find_one({"email": user_data.email})
+    existing_user = await _find_user_by_email(user_data.email)
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
-    
-    # Check if username already exists
-    existing_username = await users_collection.find_one({"username": user_data.username})
+
+    existing_username = await _find_user_by_username(user_data.username)
     if existing_username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already taken"
         )
-    
-    # Create user document
+
+    user_id = str(uuid.uuid4())
     user_doc = {
+        "PK": user_id,
+        "id": user_id,
         "email": user_data.email,
         "username": user_data.username,
         "hashed_password": get_password_hash(user_data.password),
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.utcnow().isoformat(),
         "is_active": True,
         "scrape_jobs": [],
         "collections": []
     }
-    
-    result = await users_collection.insert_one(user_doc)
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": str(result.inserted_id)})
-    
+
+    await asyncio.to_thread(put_item, "users", user_doc)
+    access_token = create_access_token(data={"sub": user_id})
     return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/login", response_model=Token)
 async def login(user_data: UserLogin):
     """Login and get access token."""
-    users_collection = get_collection("users")
-    
-    user = await users_collection.find_one({"email": user_data.email})
-    
+    user = await _find_user_by_email(user_data.email)
+
     if not user or not verify_password(user_data.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     if not user.get("is_active", True):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated"
         )
-    
-    access_token = create_access_token(data={"sub": str(user["_id"])})
-    
+
+    access_token = create_access_token(data={"sub": user["id"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -85,7 +88,7 @@ async def login(user_data: UserLogin):
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
     """Get current user information."""
     return UserResponse(
-        id=str(current_user["_id"]),
+        id=current_user["id"],
         email=current_user["email"],
         username=current_user["username"],
         created_at=current_user["created_at"],
@@ -99,49 +102,35 @@ async def update_current_user(
     current_user: dict = Depends(get_current_user)
 ):
     """Update current user information."""
-    users_collection = get_collection("users")
-    
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
-    
+
     if not update_dict:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields to update"
         )
-    
-    # Check if new email is already taken
+
     if "email" in update_dict:
-        existing = await users_collection.find_one({
-            "email": update_dict["email"],
-            "_id": {"$ne": current_user["_id"]}
-        })
-        if existing:
+        existing = await _find_user_by_email(update_dict["email"])
+        if existing and existing["id"] != current_user["id"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already in use"
             )
-    
-    # Check if new username is already taken
+
     if "username" in update_dict:
-        existing = await users_collection.find_one({
-            "username": update_dict["username"],
-            "_id": {"$ne": current_user["_id"]}
-        })
-        if existing:
+        existing = await _find_user_by_username(update_dict["username"])
+        if existing and existing["id"] != current_user["id"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Username already taken"
             )
-    
-    await users_collection.update_one(
-        {"_id": current_user["_id"]},
-        {"$set": update_dict}
-    )
-    
-    updated_user = await users_collection.find_one({"_id": current_user["_id"]})
-    
+
+    await asyncio.to_thread(update_item, "users", {"PK": current_user["id"]}, update_dict)
+    updated_user = await asyncio.to_thread(get_by_id, "users", current_user["id"])
+
     return UserResponse(
-        id=str(updated_user["_id"]),
+        id=updated_user["id"],
         email=updated_user["email"],
         username=updated_user["username"],
         created_at=updated_user["created_at"],
@@ -152,14 +141,16 @@ async def update_current_user(
 @router.get("/me/jobs")
 async def get_user_jobs(current_user: dict = Depends(get_current_user)):
     """Get all scrape jobs for current user."""
-    jobs_collection = get_collection("scrape_jobs")
-    
-    cursor = jobs_collection.find({"user_id": str(current_user["_id"])})
-    jobs = await cursor.to_list(length=100)
-    
+    jobs = await asyncio.to_thread(
+        scan_table,
+        "scrape_jobs",
+        get_scan_attr("user_id").eq(current_user["id"]),
+    )
+    jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+
     return {"jobs": [
         {
-            "id": str(job["_id"]),
+            "id": job.get("id"),
             "url": job.get("url"),
             "status": job.get("status"),
             "pages_stored": job.get("pages_stored", 0),
@@ -169,21 +160,19 @@ async def get_user_jobs(current_user: dict = Depends(get_current_user)):
             "created_at": job.get("created_at"),
             "collection_name": job.get("collection_name")
         }
-        for job in jobs
-    ], "count": len(jobs)}
+        for job in jobs[:100]
+    ], "count": len(jobs[:100])}
 
 
 @router.get("/me/collections")
 async def get_user_collections(current_user: dict = Depends(get_current_user)):
     """Get all collections owned by current user."""
-    user_id = str(current_user["_id"])
-    collections = await collection_store.get_all_collections(user_id=user_id)
+    collections = await collection_store.get_all_collections(user_id=current_user["id"])
     return {"collections": collections, "count": len(collections)}
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_current_user(current_user: dict = Depends(get_current_user)):
     """Delete current user account."""
-    users_collection = get_collection("users")
-    await users_collection.delete_one({"_id": current_user["_id"]})
+    await asyncio.to_thread(delete_item, "users", {"PK": current_user["id"]})
     return None

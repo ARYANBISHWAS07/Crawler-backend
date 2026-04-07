@@ -209,7 +209,6 @@ async def create_collection(
         "routes_not_crawled_count": 0,
         "job_id": job_id,
         "user_id": req.user_id,
-        "chat_sessions": [],
         "created_at": now,
         "updated_at": now
     }
@@ -228,6 +227,7 @@ async def create_collection(
         "max_depth": req.max_depth,
         "collection_name": req.name,
         "collection_id": collection_id,
+        "user_id": req.user_id,
         "status": "pending",
         "pages_stored": 0,
         "routes_crawled": [],

@@ -1,24 +1,22 @@
 from datetime import datetime
 import uuid
 
+from app.database import put_item
+
+
 def save_chunk_questionnaire(
     collection_id: str,
-    # chunk_content: str,
     questionnaire: str,
     metadata: dict
 ) -> bool:
-    from app.database import get_collection
-
-    chunk_collection = get_collection("chunk_question")
-
+    item_id = str(uuid.uuid4())
     document = {
-        "id": str(uuid.uuid4()),
+        "PK": item_id,
+        "id": item_id,
         "collection_id": collection_id,
-        # "chunk_content": chunk_content,
         "questionnaire": questionnaire,
         "metadata": metadata,
-        "created_at": datetime.utcnow()
+        "created_at": datetime.utcnow().isoformat(),
     }
-
-    chunk_collection.insert_one(document)
+    put_item("chunk_question", document)
     return True

@@ -1,4 +1,5 @@
 import bcrypt
+import asyncio
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
@@ -56,7 +57,7 @@ def decode_token(token: str) -> Optional[dict]:
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Dependency to get current authenticated user from token."""
-    from app.database import get_collection
+    from app.database import get_by_id
     
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -74,10 +75,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     if user_id is None:
         raise credentials_exception
     
-    # Get user from database
-    from bson import ObjectId
-    users_collection = get_collection("users")
-    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    user = await asyncio.to_thread(get_by_id, "users", user_id)
     
     if user is None:
         raise credentials_exception

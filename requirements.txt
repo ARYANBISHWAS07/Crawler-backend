@@ -6,10 +6,7 @@ redis>=5.0.0
 python-dotenv
 pydantic[email]
 email-validator
-
-# MongoDB
-motor
-pymongo
+boto3
 
 # Authentication
 python-jose[cryptography]

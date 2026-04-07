@@ -1,122 +1,48 @@
 """
-Job storage service using MongoDB for persistence.
+Job storage service using DynamoDB for persistence.
 """
-import json
-import os
+import asyncio
 from datetime import datetime
-from typing import Optional, Dict, List
-from dotenv import load_dotenv
+from typing import List, Optional
+import uuid
 
-load_dotenv()
+from app.database import get_by_id, put_item, scan_table, update_item, delete_item
 
 
 async def create_job(job_data: dict) -> dict:
-    """
-    Create a new job in MongoDB.
-    Returns the created job data.
-    """
-    from app.database import get_collection
-    
-    # Store in MongoDB 
-    jobs_collection = get_collection("scrape_jobs")
-    await jobs_collection.insert_one(job_data.copy())
-    
-    return job_data
+    job_id = job_data.get("id") or job_data.get("PK") or str(uuid.uuid4())
+    document = {
+        "PK": job_id,
+        "id": job_id,
+        **job_data,
+    }
+    await asyncio.to_thread(put_item, "scrape_jobs", document)
+    return document
 
 
 async def get_job(job_id: str) -> Optional[dict]:
-    """
-    Get job by ID from MongoDB.
-    """
-    from app.database import get_collection
-    
-    jobs_collection = get_collection("scrape_jobs")
-    job = await jobs_collection.find_one({"id": job_id})
-    
-    if job:
-        job.pop("_id", None)
-        return job
-    
-    return None
+    return await asyncio.to_thread(get_by_id, "scrape_jobs", job_id)
 
 
 async def update_job(job_id: str, updates: dict) -> Optional[dict]:
-    """
-    Update job in MongoDB.
-    """
-    from app.database import get_collection
-    
     updates["updated_at"] = datetime.utcnow().isoformat()
-    
-    # Update in MongoDB
-    jobs_collection = get_collection("scrape_jobs")
-    result = await jobs_collection.find_one_and_update(
-        {"id": job_id},
-        {"$set": updates},
-        return_document=True
-    )
-    
-    if result:
-        result.pop("_id", None)
-        return result
-    
-    return None
+    return await asyncio.to_thread(update_item, "scrape_jobs", {"PK": job_id}, updates)
 
 
 def update_job_sync(job_id: str, updates: dict) -> bool:
-    """
-    Synchronous job update for use in background tasks.
-    Uses PyMongo for sync MongoDB update.
-    """
-    from pymongo import MongoClient
-    
     updates["updated_at"] = datetime.utcnow().isoformat()
-    
-    # Update MongoDB using sync PyMongo client
     try:
-        mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-        database_name = os.getenv("DATABASE_NAME", "scrapper_db")
-        
-        sync_client = MongoClient(mongodb_url)
-        db = sync_client[database_name]
-        jobs_collection = db["scrape_jobs"]
-        
-        jobs_collection.update_one(
-            {"id": job_id},
-            {"$set": updates}
-        )
-        sync_client.close()
-    except Exception as e:
-        print(f"MongoDB sync update error: {e}")
+        return update_item("scrape_jobs", {"PK": job_id}, updates) is not None
+    except Exception as exc:
+        print(f"DynamoDB sync update error: {exc}")
         return False
-    
-    return True
 
 
 async def get_all_jobs(limit: int = 100) -> List[dict]:
-    """
-    Get all jobs from MongoDB.
-    """
-    from app.database import get_collection
-    
-    jobs_collection = get_collection("scrape_jobs")
-    cursor = jobs_collection.find().sort("created_at", -1).limit(limit)
-    
-    jobs = []
-    async for job in cursor:
-        job.pop("_id", None)
-        jobs.append(job)
-    
-    return jobs
+    jobs = await asyncio.to_thread(scan_table, "scrape_jobs", None, limit)
+    jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return jobs[:limit]
 
 
 async def delete_job(job_id: str) -> bool:
-    """
-    Delete job from MongoDB.
-    """
-    from app.database import get_collection
-    
-    jobs_collection = get_collection("scrape_jobs")
-    result = await jobs_collection.delete_one({"id": job_id})
-    
-    return result.deleted_count > 0
+    return await asyncio.to_thread(delete_item, "scrape_jobs", {"PK": job_id})
