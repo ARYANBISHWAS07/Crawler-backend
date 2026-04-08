@@ -2,7 +2,7 @@
 Chat routes for collection-based conversations.
 Uses Socket.IO for real-time messaging and HTTP endpoints for REST API.
 """
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
@@ -13,6 +13,7 @@ import re
 from app import collection_store
 from app import vector_store
 from app import llm_service
+from app.auth import get_current_user
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -55,6 +56,24 @@ class SessionResponse(BaseModel):
     updated_at: str
 
 
+def _current_user_id(current_user: dict) -> str:
+    return str(current_user["_id"])
+
+
+def _ensure_collection_owner(collection: Optional[dict], user_id: str) -> dict:
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+    if collection.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this collection"
+        )
+    return collection
+
+
 def _is_follow_up_message(message: str) -> bool:
     text = (message or "").strip().lower()
     if not text:
@@ -91,15 +110,11 @@ def _resolve_retrieval_query(message: str, session_messages: List[dict]) -> str:
 
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
-async def create_session(req: CreateSessionRequest):
+async def create_session(req: CreateSessionRequest, current_user: dict = Depends(get_current_user)):
     """Create a new chat session for a collection."""
     # Verify collection exists
     collection = await collection_store.get_collection_by_id(req.collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    _ensure_collection_owner(collection, _current_user_id(current_user))
     
     session_id = str(uuid.uuid4())
     session_data = {
@@ -117,22 +132,25 @@ async def create_session(req: CreateSessionRequest):
 
 
 @router.get("/sessions/{collection_id}")
-async def get_sessions(collection_id: str):
+async def get_sessions(collection_id: str, current_user: dict = Depends(get_current_user)):
     """Get all chat sessions for a collection."""
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    _ensure_collection_owner(collection, _current_user_id(current_user))
     
     sessions = await collection_store.get_all_chat_sessions(collection_id)
     return {"collection_id": collection_id, "sessions": sessions}
 
 
 @router.get("/session/{collection_id}/{session_id}")
-async def get_session(collection_id: str, session_id: str):
+async def get_session(
+    collection_id: str,
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get a specific chat session with all messages."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    _ensure_collection_owner(collection, _current_user_id(current_user))
+
     session = await collection_store.get_chat_session(collection_id, session_id)
     if not session:
         raise HTTPException(
@@ -144,8 +162,15 @@ async def get_session(collection_id: str, session_id: str):
 
 
 @router.delete("/session/{collection_id}/{session_id}")
-async def delete_session(collection_id: str, session_id: str):
+async def delete_session(
+    collection_id: str,
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Delete a chat session."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    _ensure_collection_owner(collection, _current_user_id(current_user))
+
     deleted = await collection_store.delete_chat_session(collection_id, session_id)
     if not deleted:
         raise HTTPException(
@@ -160,18 +185,15 @@ async def delete_session(collection_id: str, session_id: str):
 async def send_message(
     collection_id: str,
     session_id: str,
-    req: SendMessageRequest
+    req: SendMessageRequest,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Send a message and get AI response (REST API).
     For real-time updates, use Socket.IO instead.
     """
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, _current_user_id(current_user))
 
     session = await collection_store.get_chat_session(collection_id, session_id)
     if not session:
@@ -278,8 +300,15 @@ async def send_message(
 
 
 @router.get("/history/{collection_id}/{session_id}")
-async def get_chat_history(collection_id: str, session_id: str):
+async def get_chat_history(
+    collection_id: str,
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get full chat history for a session."""
+    collection = await collection_store.get_collection_by_id(collection_id)
+    _ensure_collection_owner(collection, _current_user_id(current_user))
+
     session = await collection_store.get_chat_session(collection_id, session_id)
     if not session:
         raise HTTPException(

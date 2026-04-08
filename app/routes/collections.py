@@ -1,7 +1,7 @@
 """
 Collection routes for managing scraped website collections.
 """
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -16,6 +16,7 @@ from app.socketio_manager import emit_job_update_sync, emit_collection_update_sy
 from app.crawler import handle_chunk
 from app.llm_service import generate_learning_path
 from app.models.collection import GenerateLearningPathRequest, LearningPathResponse
+from app.auth import get_current_user
 import asyncio
 from app.redis_client import cache_get_json, cache_set_json, cache_delete, publish_event
 
@@ -34,6 +35,24 @@ class CreateCollectionRequest(BaseModel):
 
 class UpdateCollectionRequest(BaseModel):
     name: Optional[str] = None
+
+
+def _current_user_id(current_user: dict) -> str:
+    return str(current_user["_id"])
+
+
+def _ensure_collection_owner(collection: Optional[dict], user_id: str) -> dict:
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found"
+        )
+    if collection.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this collection"
+        )
+    return collection
 
 
 def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollectionRequest):
@@ -180,7 +199,8 @@ def run_collection_scrape_job(job_id: str, collection_id: str, req: CreateCollec
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_collection(
     req: CreateCollectionRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Create a new collection and start scraping the website.
@@ -194,6 +214,8 @@ async def create_collection(
             detail=f"Collection '{req.name}' already exists"
         )
     
+    user_id = _current_user_id(current_user)
+
     collection_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
@@ -208,7 +230,7 @@ async def create_collection(
         "routes_crawled_count": 0,
         "routes_not_crawled_count": 0,
         "job_id": job_id,
-        "user_id": req.user_id,
+        "user_id": user_id,
         "chat_sessions": [],
         "created_at": now,
         "updated_at": now
@@ -216,7 +238,9 @@ async def create_collection(
     await collection_store.create_collection(collection_data)
     await cache_delete(
         "collections:all",
+        f"collections:user:{user_id}",
         f"collection:name:{req.name}",
+        f"collection:name:{req.name}:user:{user_id}",
     )
     await publish_event("collections.updated", {"collection_id": collection_id, "updates": {"status": "pending"}})
     
@@ -255,33 +279,31 @@ async def create_collection(
 
 
 @router.get("/")
-async def list_collections(user_id: Optional[str] = None):
-    """List all collections, optionally filtered by user."""
-    cache_key = f"collections:user:{user_id}" if user_id else "collections:all"
+async def list_collections(current_user: dict = Depends(get_current_user)):
+    """List collections for the authenticated user."""
+    current_user_id = _current_user_id(current_user)
+    cache_key = f"collections:user:{current_user_id}"
     cached = await cache_get_json(cache_key)
     if cached:
         return cached
 
-    collections = await collection_store.get_all_collections(user_id)
+    collections = await collection_store.get_all_collections(current_user_id)
     payload = {"collections": collections, "count": len(collections)}
     await cache_set_json(cache_key, payload, ttl_seconds=60)
     return payload
 
 
 @router.get("/{collection_id}")
-async def get_collection(collection_id: str):
+async def get_collection(collection_id: str, current_user: dict = Depends(get_current_user)):
     """Get a specific collection with its details."""
-    cache_key = f"collection:id:{collection_id}"
+    current_user_id = _current_user_id(current_user)
+    cache_key = f"collection:id:{collection_id}:user:{current_user_id}"
     cached = await cache_get_json(cache_key)
     if cached:
         return cached
 
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
     
     # Get vector store stats
     try:
@@ -295,25 +317,26 @@ async def get_collection(collection_id: str):
 
 
 @router.get("/name/{name}")
-async def get_collection_by_name(name: str):
+async def get_collection_by_name(name: str, current_user: dict = Depends(get_current_user)):
     """Get a collection by its name."""
-    cache_key = f"collection:name:{name}"
+    current_user_id = _current_user_id(current_user)
+    cache_key = f"collection:name:{name}:user:{current_user_id}"
     cached = await cache_get_json(cache_key)
     if cached:
         return cached
 
     collection = await collection_store.get_collection_by_name(name)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
     await cache_set_json(cache_key, collection, ttl_seconds=60)
     return collection
 
 
 @router.patch("/{collection_id}")
-async def update_collection(collection_id: str, req: UpdateCollectionRequest):
+async def update_collection(
+    collection_id: str,
+    req: UpdateCollectionRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Update collection metadata."""
     updates = {k: v for k, v in req.dict().items() if v is not None}
     
@@ -323,6 +346,10 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
             detail="No updates provided"
         )
     
+    current_user_id = _current_user_id(current_user)
+    existing = await collection_store.get_collection_by_id(collection_id)
+    _ensure_collection_owner(existing, current_user_id)
+
     collection = await collection_store.update_collection(collection_id, updates)
     if not collection:
         raise HTTPException(
@@ -331,22 +358,21 @@ async def update_collection(collection_id: str, req: UpdateCollectionRequest):
         )
     await cache_delete(
         "collections:all",
-        f"collection:id:{collection_id}",
+        f"collections:user:{current_user_id}",
+        f"collection:id:{collection_id}:user:{current_user_id}",
         f"collection:name:{collection.get('name')}",
+        f"collection:name:{collection.get('name')}:user:{current_user_id}",
     )
     await publish_event("collections.updated", {"collection_id": collection_id, "updates": updates})
     return collection
 
 
 @router.delete("/{collection_id}")
-async def delete_collection(collection_id: str):
+async def delete_collection(collection_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a collection and its associated data."""
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
     
     # Delete from vector store
     try:
@@ -362,8 +388,10 @@ async def delete_collection(collection_id: str):
     await collection_store.delete_collection(collection_id)
     await cache_delete(
         "collections:all",
-        f"collection:id:{collection_id}",
+        f"collections:user:{current_user_id}",
+        f"collection:id:{collection_id}:user:{current_user_id}",
         f"collection:name:{collection.get('name')}",
+        f"collection:name:{collection.get('name')}:user:{current_user_id}",
     )
     await publish_event("collections.updated", {"collection_id": collection_id, "deleted": True})
     
@@ -371,14 +399,11 @@ async def delete_collection(collection_id: str):
 
 
 @router.get("/{collection_id}/job")
-async def get_collection_job(collection_id: str):
+async def get_collection_job(collection_id: str, current_user: dict = Depends(get_current_user)):
     """Get the scraping job associated with a collection."""
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
     
     job_id = collection.get("job_id")
     if not job_id:
@@ -398,14 +423,11 @@ async def get_collection_job(collection_id: str):
 
 
 @router.get("/{collection_id}/routes")
-async def get_collection_routes(collection_id: str):
+async def get_collection_routes(collection_id: str, current_user: dict = Depends(get_current_user)):
     """Get crawled and not-crawled routes for a collection."""
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
 
     job_id = collection.get("job_id")
     if not job_id:
@@ -440,14 +462,12 @@ async def get_collection_crawl_logs(
     collection_id: str,
     limit: int = Query(200, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get crawl logs for a collection job (including crawled and skipped endpoints)."""
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
 
     job_id = collection.get("job_id")
     if not job_id:
@@ -517,19 +537,19 @@ async def generate_learning_path_from_urls(req: GenerateLearningPathRequest):
 
 
 @router.post("/{collection_id}/learning-path", response_model=LearningPathResponse)
-async def generate_learning_path_for_collection(collection_id: str):
+async def generate_learning_path_for_collection(
+    collection_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Generate a structured learning path from a collection's crawled URLs.
     
     Uses the URLs that were crawled during the collection's scraping job
     to generate a learning path.
     """
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
     
     job_id = collection.get("job_id")
     if not job_id:
@@ -564,8 +584,10 @@ async def generate_learning_path_for_collection(collection_id: str):
         })
         await cache_delete(
             "collections:all",
-            f"collection:id:{collection_id}",
+            f"collections:user:{current_user_id}",
+            f"collection:id:{collection_id}:user:{current_user_id}",
             f"collection:name:{collection.get('name')}",
+            f"collection:name:{collection.get('name')}:user:{current_user_id}",
         )
         await publish_event(
             "collections.updated",
@@ -590,16 +612,16 @@ async def generate_learning_path_for_collection(collection_id: str):
 
 
 @router.get("/{collection_id}/learning-path", response_model=LearningPathResponse)
-async def get_learning_path_for_collection(collection_id: str):
+async def get_learning_path_for_collection(
+    collection_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Get the latest generated learning path graph for a collection.
     """
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
 
     learning_path_graph = collection.get("learning_path_graph")
     if not learning_path_graph:
@@ -612,14 +634,14 @@ async def get_learning_path_for_collection(collection_id: str):
 
 
 @router.get("/{collection_id}/learning-path/summaries")
-async def get_learning_path_summaries_for_collection(collection_id: str):
+async def get_learning_path_summaries_for_collection(
+    collection_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Get persisted learning-node summaries for a collection."""
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    _ensure_collection_owner(collection, current_user_id)
 
     summaries = await learning_node_summary_store.get_collection_node_summaries(collection_id)
     return {
@@ -630,17 +652,18 @@ async def get_learning_path_summaries_for_collection(collection_id: str):
 
 
 @router.get("/{collection_id}/learning-path/nodes/{node_id}/summary")
-async def get_learning_path_node_summary(collection_id: str, node_id: str):
+async def get_learning_path_node_summary(
+    collection_id: str,
+    node_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Get the summary for a single learning-path node.
     Use this endpoint when a user clicks a node in the frontend.
     """
+    current_user_id = _current_user_id(current_user)
     collection = await collection_store.get_collection_by_id(collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found"
-        )
+    collection = _ensure_collection_owner(collection, current_user_id)
 
     summary_doc = await learning_node_summary_store.get_collection_node_summary(collection_id, node_id)
     if summary_doc:

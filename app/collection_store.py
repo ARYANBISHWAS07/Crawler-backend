@@ -102,9 +102,8 @@ async def get_all_collections(user_id: Optional[str] = None, limit: int = 100) -
     
     collections = get_collection("collections")
     
-    global_view = os.getenv("COLLECTIONS_GLOBAL", "true").strip().lower() in {"1", "true", "yes"}
     query = {}
-    if user_id and not global_view:
+    if user_id:
         query["user_id"] = user_id
     
     cursor = collections.find(query).sort("created_at", -1).limit(limit)
