@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from app.extensions import scrape_single_page
+from app.crawler import run_crawl
 from app.models import WebsiteChatMessage, WebsiteScrapePageRequest, WebsiteSession
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
@@ -101,7 +101,17 @@ async def scrape_page(payload: WebsiteScrapePageRequest):
     using the scraped context.
     """
     try:
-        raw = await scrape_single_page(str(payload.url))
+        results = await run_crawl(str(payload.url), max_pages=1)
+        
+        # Extract text from the crawl results
+        if isinstance(results, list) and len(results) > 0:
+            raw = results[0]
+        elif isinstance(results, dict) and "pages" in results:
+            pages = results.get("pages", [])
+            raw = pages[0] if pages else {}
+        else:
+            raise RuntimeError("No content returned from scraping.")
+        
         scraped_text = extract_scraped_text(raw).strip()
         if not scraped_text:
             raise RuntimeError("Scraped page did not return readable text content.")
