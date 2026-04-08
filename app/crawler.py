@@ -1145,5 +1145,6 @@ def handle_chunk(chunk: str, metadata: Dict[str, Any], collection_id: str):
     chunk_store.save_chunk_questionnaire(
         collection_id=collection_id,
         questionnaire=questionnaire,
-        metadata=metadata
+        metadata=metadata,
+        chunk_text=chunk,
     )
