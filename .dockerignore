@@ -9,8 +9,6 @@ venv/
 .git
 .gitignore
 .dockerignore
-.env
-.env.local
 *.md
 .pytest_cache
 .mypy_cache
