@@ -1,28 +1,31 @@
+import asyncio
 from datetime import datetime
 from typing import List
 import uuid
 
+from app.database import delete_item, get_scan_attr, put_item, scan_table
+
 
 async def replace_collection_node_summaries(collection_id: str, nodes: List[dict]) -> int:
-    """
-    Replace all saved learning node summaries for a collection.
-    Returns number of summaries saved.
-    """
-    from app.database import get_collection
+    existing = await asyncio.to_thread(
+        scan_table,
+        "learning_node_summaries",
+        get_scan_attr("collection_id").eq(collection_id),
+    )
+    for item in existing:
+        await asyncio.to_thread(delete_item, "learning_node_summaries", {"PK": item["PK"]})
 
-    summaries_collection = get_collection("learning_node_summaries")
-
-    await summaries_collection.delete_many({"collection_id": collection_id})
-
-    now = datetime.utcnow()
+    now = datetime.utcnow().isoformat()
     documents = []
     for node in nodes:
         summary_text = (node.get("summary") or "").strip()
         if not summary_text:
             continue
 
-        documents.append({
-            "id": str(uuid.uuid4()),
+        item_id = str(uuid.uuid4())
+        document = {
+            "PK": item_id,
+            "id": item_id,
             "collection_id": collection_id,
             "node_id": node.get("id", ""),
             "node_label": node.get("label", ""),
@@ -32,38 +35,28 @@ async def replace_collection_node_summaries(collection_id: str, nodes: List[dict
             "node_type": node.get("type"),
             "created_at": now,
             "updated_at": now,
-        })
-
-    if documents:
-        await summaries_collection.insert_many(documents)
+        }
+        await asyncio.to_thread(put_item, "learning_node_summaries", document)
+        documents.append(document)
 
     return len(documents)
 
 
 async def get_collection_node_summaries(collection_id: str) -> List[dict]:
-    """Get all learning node summaries for a collection."""
-    from app.database import get_collection
-
-    summaries_collection = get_collection("learning_node_summaries")
-    cursor = summaries_collection.find({"collection_id": collection_id}).sort("created_at", 1)
-
-    result: List[dict] = []
-    async for item in cursor:
-        item.pop("_id", None)
-        result.append(item)
+    result = await asyncio.to_thread(
+        scan_table,
+        "learning_node_summaries",
+        get_scan_attr("collection_id").eq(collection_id),
+    )
+    result.sort(key=lambda item: item.get("created_at", ""))
     return result
 
 
 async def get_collection_node_summary(collection_id: str, node_id: str):
-    """Get summary for one node in a collection."""
-    from app.database import get_collection
-
-    summaries_collection = get_collection("learning_node_summaries")
-    item = await summaries_collection.find_one({
-        "collection_id": collection_id,
-        "node_id": node_id,
-    })
-    if not item:
-        return None
-    item.pop("_id", None)
-    return item
+    items = await asyncio.to_thread(
+        scan_table,
+        "learning_node_summaries",
+        get_scan_attr("collection_id").eq(collection_id) & get_scan_attr("node_id").eq(node_id),
+        1,
+    )
+    return items[0] if items else None

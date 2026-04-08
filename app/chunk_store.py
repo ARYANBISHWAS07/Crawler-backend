@@ -3,6 +3,9 @@ import uuid
 import os
 from pymongo import MongoClient
 
+from app.database import put_item
+
+
 def save_chunk_questionnaire(
     collection_id: str,
     questionnaire: dict,
@@ -15,7 +18,8 @@ def save_chunk_questionnaire(
     chunk_collection = sync_client[database_name]["chunk_question"]
 
     document = {
-        "id": str(uuid.uuid4()),
+        "PK": item_id,
+        "id": item_id,
         "collection_id": collection_id,
         "questionnaire": questionnaire.get("questions", []) if isinstance(questionnaire, dict) else [],
         "metadata": metadata,
